@@ -108,6 +108,16 @@ load_device() {
   for p in boot vendor_boot dtbo; do
     [[ $seen == *" $p "* ]] || die "$file: BOOT_IMAGES must include $p"
   done
+  # AVB_FOOTERS: image:partition-size pairs for the images stock vbmeta
+  # chains to, which need their own AVB footer (images adds it)
+  local pair
+  for pair in ${DEV_AVB_FOOTERS:-}; do
+    [[ $pair =~ ^([a-z_]+):([0-9]+)$ ]] || die "$file: AVB_FOOTERS entries are image:size, not $pair"
+    [[ $seen == *" ${BASH_REMATCH[1]} "* ]] || die "$file: AVB_FOOTERS names ${BASH_REMATCH[1]}, which is not in BOOT_IMAGES"
+  done
+  if [[ -n ${DEV_AVB_FOOTERS:-} ]]; then
+    [[ ${DEV_AVB_ROLLBACK_INDEX:-} =~ ^[0-9]+$ ]] || die "$file: AVB_FOOTERS needs a numeric AVB_ROLLBACK_INDEX"
+  fi
 }
 
 # The images in $1 were built for $DEVICE: flash and push must not write
@@ -532,6 +542,21 @@ cmd_images() {
       --dtb "$img/dtb.img" --ramdisk_type 1 --ramdisk_name '' --vendor_ramdisk_fragment "$KERNEL_OUT/initramfs.cpio.lz4" \
       --vendor_boot "$img/vendor_boot.img"
   fi
+  # Images that stock vbmeta chains to (AVB_FOOTERS) need their own AVB
+  # footer at the end of the partition. Without one, ABL finds the stale stock
+  # footer (fastboot leaves the tail of the partition alone) pointing into our
+  # kernel: invalid metadata, which stops the boot before the kernel runs,
+  # unlocked or not. Signed with AOSP's public test key: an unlocked
+  # bootloader accepts a key it doesn't know, as it accepts a wrong hash.
+  local avb="$SRC_DIR/external/avb" pair p size
+  for pair in ${DEV_AVB_FOOTERS:-}; do
+    p=${pair%%:*} size=${pair#*:}
+    [[ -f "$avb/avbtool.py" ]] || die "no avbtool: clone platform/external/avb into $SRC_DIR/external/avb"
+    say "AVB footer: $p ($size-byte partition)"
+    python3 -I "$avb/avbtool.py" add_hash_footer --image "$img/$p.img" --partition_name "$p" \
+      --partition_size "$size" --algorithm SHA256_RSA4096 --key "$avb/test/data/testkey_rsa4096.pem" \
+      --rollback_index "$DEV_AVB_ROLLBACK_INDEX" --prop "com.android.build.$p.os_version:${DEV_OS_VERSION%%.*}"
+  done
   printf '%s\n' "$DEV_CODENAME" > "$img/DEVICE"
   ls -lh "$img"/*.img
 }
