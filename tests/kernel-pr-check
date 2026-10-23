@@ -1,0 +1,92 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT
+# tools/kernel-pr-check's commit checks against a stand-in kernel tree (a
+# git repository with a fake scripts/checkpatch.pl): sign-offs, prefixes and
+# checkpatch errors. The --build half needs a real tree and is run by hand.
+set -euo pipefail
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+t=$(mktemp -d)
+trap 'rm -rf "$t"' EXIT
+fail() { echo "not ok - $*" >&2; exit 1; }
+
+k=$t/linux
+mkdir -p "$k/scripts" "$k/drivers"
+# checkpatch's stand-in: an ERROR for any added line with "BADSTYLE".
+cat > "$k/scripts/checkpatch.pl" <<'EOF'
+#!/usr/bin/perl
+while (<STDIN>) { print "-:1: ERROR:CODE_STYLE: bad style\n" if /^\+.*BADSTYLE/; }
+EOF
+chmod +x "$k/scripts/checkpatch.pl"
+cd "$k"
+git init -q -b omamobile
+git config user.name "A Human"
+git config user.email human@example.org
+echo base > drivers/a.c
+git add -A && git commit -q -m "base"
+
+run() { # name expect pattern
+  local out status=0
+  out=$("$here/tools/kernel-pr-check" -C "$k" omamobile HEAD 2>&1) || status=$?
+  [[ $status == "$2" ]] || { echo "$out"; fail "$1: exit $status, expected $2"; }
+  [[ -z ${3:-} ]] || grep -c -- "$3" <<<"$out" >/dev/null || { echo "$out"; fail "$1: says '$3'"; }
+}
+branch() { git checkout -q omamobile && git checkout -q -b "$1"; }
+
+branch good
+echo good >> drivers/a.c
+git commit -q -am "drivers: a: a good change" -m "Signed-off-by: A Human <human@example.org>" -m "Assisted-by: Claude:claude-opus-5-5"
+run "a good commit" 0
+echo "ok - a signed-off, prefixed, clean commit passes (Assisted-by is fine)"
+
+branch nosob
+echo x >> drivers/a.c
+git commit -q -am "drivers: a: unsigned"
+run "no sign-off" 1 "no human Signed-off-by"
+echo "ok - a commit without a sign-off fails"
+
+branch other
+echo x >> drivers/a.c
+git commit -q -am "drivers: a: someone else signs" -m "Signed-off-by: Someone Else <else@example.org>"
+run "not the author's sign-off" 1 "no Signed-off-by from the author"
+echo "ok - a sign-off that isn't the author's fails"
+
+branch aisob
+echo x >> drivers/a.c
+git commit -q -am "drivers: a: AI signs" -m "Signed-off-by: A Human <human@example.org>" -m "Signed-off-by: Claude <noreply@anthropic.com>"
+run "an AI sign-off" 1 "from an AI agent"
+echo "ok - an AI Signed-off-by fails"
+
+branch noprefix
+echo x >> drivers/a.c
+git commit -q -am "Fix the thing" -m "Signed-off-by: A Human <human@example.org>"
+run "no prefix" 1 "without a subsystem prefix"
+echo "ok - a subject without a subsystem prefix fails"
+
+branch style
+echo "BADSTYLE" >> drivers/a.c
+git commit -q -am "drivers: a: style" -m "Signed-off-by: A Human <human@example.org>"
+run "a checkpatch error" 1 "checkpatch --strict errors"
+echo "ok - a checkpatch error fails"
+
+# CI runs `kernel-pr-check -C linux` from the directory that contains the
+# kernel checkout. The path has to still work after the tool cds in.
+rel_status=0
+rel_out=$(cd "$t" && "$here/tools/kernel-pr-check" -C linux omamobile good 2>&1) || rel_status=$?
+[[ $rel_status == 0 ]] || { echo "$rel_out"; fail "relative -C: exit $rel_status"; }
+grep -q 'policy (tools/pr-check)' <<<"$rel_out" || { echo "$rel_out"; fail "relative -C did not run the policy check"; }
+echo "ok - a relative -C still reaches the kernel tree"
+
+miss_status=0
+miss_out=$("$here/tools/kernel-pr-check" -C "$t/no-such-tree" omamobile HEAD 2>&1) || miss_status=$?
+[[ $miss_status == 2 ]] || { echo "$miss_out"; fail "missing tree: exit $miss_status, expected 2"; }
+grep -q 'no such tree' <<<"$miss_out" || { echo "$miss_out"; fail "missing tree: silent"; }
+echo "ok - a missing -C is reported"
+
+in_status=0
+in_out=$("$here/tools/kernel-pr-check" -C "$k" --build "$k/out" omamobile HEAD 2>&1) || in_status=$?
+[[ $in_status == 2 ]] || { echo "$in_out"; fail "--build inside the tree: exit $in_status, expected 2"; }
+grep -q 'inside the kernel tree' <<<"$in_out" || { echo "$in_out"; fail "--build inside the tree: silent"; }
+rel_build_status=0
+rel_build_out=$(cd "$k" && "$here/tools/kernel-pr-check" -C . --build out omamobile HEAD 2>&1) || rel_build_status=$?
+[[ $rel_build_status == 2 ]] || { echo "$rel_build_out"; fail "a relative --build inside the tree: exit $rel_build_status, expected 2"; }
+echo "ok - --build is refused inside the kernel tree, relative or not"

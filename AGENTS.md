@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 # AGENTS.md: working on Omarchy Mobile as an AI coding agent
 
-Omarchy Mobile runs native Omarchy (Arch Linux ARM, Hyprland, Omarchy's packages) on Google Pixel phones with a mainline kernel and no Android. The reference device is the Pixel 7 Pro (`cheetah`, gs201). Read [CONTRIBUTING.md](CONTRIBUTING.md) for the project, the safety model and the bring-up order. This file holds the rules and gotchas for agents, each with the reason behind it.
+Omarchy Mobile runs native Omarchy (Arch Linux ARM, Hyprland, Omarchy's packages) on mobile devices with a mainline kernel and no Android. The reference device is the Pixel 7 Pro (`cheetah`, gs201). Read [CONTRIBUTING.md](CONTRIBUTING.md) for the project, the safety model and the bring-up order. This file holds the rules and gotchas for agents, each with the reason behind it.
 
 **The repositories are public.** Anything you commit, push, or write into a plan, a log excerpt or a screenshot is published.
 
@@ -40,6 +40,7 @@ Omarchy Mobile runs native Omarchy (Arch Linux ARM, Hyprland, Omarchy's packages
 - **Commit messages:**
   - Kernel commits are upstream-style: the subsystem prefix from `git log --oneline <file>`, the why, and the evidence. AI agents never add `Signed-off-by:` (`Documentation/process/coding-assistants.rst`): the human signs off.
   - This repository uses an area prefix (`omamobile-gnss: …`, `device-cheetah 0.1.15: …`, `DISPLAY-PLAN: …`), a body that explains why, and the attribution trailer the session asks for.
+- **Reviewing pull requests:** use the `omamobile-reviewer` agent (`.claude/agents/omamobile-reviewer.md`), one PR (or a few related ones) per run. It reads [docs/review/LESSONS.md](docs/review/LESSONS.md), runs `tools/pr-check` or `tools/kernel-pr-check`, and returns a verdict, a draft comment and candidate lessons. Nothing is posted until the maintainer says so; confirmed lessons (and corrections, when a review was wrong) are added to LESSONS.md in a `docs/review: …` commit, so the next review knows them.
 - **Commit only your own files when others have uncommitted work**, with a temporary index:
 
   ```sh
@@ -87,6 +88,9 @@ tools/phone-ssh CMD    -> run anything; stream files with  ssh 'cat > f' < f
 | `tools/extract-vendor-firmware`, `extract-vendor-chroot`, `extract-fingerprint-vendor` | Google's files from the user's own factory image, on the laptop |
 | `tools/phone-mirror` | The phone's screen in a VNC viewer on the laptop with input (`omamobile-mirror on` on the phone, wayvnc on 172.16.42.1:5900 only); `--keep` leaves it on. Affects the phone's feel: announce it |
 | `tools/phone-install-package packages/X` | Build a package on the phone and install it |
+| `tools/pr-check [BASE]`, `tests/packages` | The pull-request gate CI runs (`.github/workflows/checks.yml`): identifiers, blobs, AI sign-offs and scripts that parse, then every package's `test/all`; run both before you push (CONTRIBUTING.md §6.5) |
+| `tools/kernel-pr-check [-C KERNEL] [--build OUT] BASE [HEAD]` | The same gate for linux-omarchy-mobile pull requests: a human Signed-off-by from the author, subsystem prefixes, `checkpatch --strict`, identifiers, and with `--build` the `W=1` builds of touched C files, device trees (new warnings only, against the base) and bindings. Build it in the project container with the Android clang on `PATH` |
+| `tools/phone-smoke` | Read-only smoke test of a running phone, with a report for the pull request: boot slot, storage guard, root, kernel health, USB, session, then display, GPU, touch, radios, battery, sound, sensors and cameras as evidence. `--here` on the phone, `--json` for a machine |
 | `omamobile-update` (on the phone; `omamobile-omarchy`) | What `omarchy update` runs on the phone: Omarchy's own update with the phone's stand-ins (docs/RELEASES.md §5.4). `check --json` is read-only; an update changes the phone's packages and restarts the shell, so it is the human's call |
 | `omamobile-omarchy-patches status\|verify\|apply` (on the phone) | The Omarchy patch series: what is applied, already upstream or failed; `apply` re-applies it all or nothing (the pacman hook does this after every Omarchy upgrade). Log: `/var/log/omamobile/omarchy-patches.log` |
 | `tools/build-packages`, `tools/build-rootfs` | aarch64 packages (signed, `out/repo`) and the root image, built on the laptop in an Arch Linux ARM container (qemu-user); no phone |

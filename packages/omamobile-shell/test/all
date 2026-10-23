@@ -247,13 +247,52 @@ pass "update sheet"
 # model, and the wiring that makes the portal pick it under Hyprland.
 python3 -B -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' bin/omamobile-portal-access || fail "omamobile-portal-access parses"
 if command -v dbus-run-session >/dev/null; then
-  dbus-run-session -- python3 -B test/portal-access.py >/dev/null 2>&1 || { dbus-run-session -- python3 -B test/portal-access.py | grep -v '^ok'; fail "omamobile-portal-access"; }
+  if ! out=$(dbus-run-session -- python3 -B test/portal-access.py 2>&1); then
+    grep -v '^ok' <<<"$out" || true
+    fail "omamobile-portal-access"
+  fi
 else
   python3 -B test/portal-access.py >/dev/null || fail "omamobile-portal-access helpers"
 fi
 if command -v node >/dev/null; then
   node test/access-model.js >/dev/null || fail "permission sheet model"
 fi
+# Calls: the model, the watcher against a fake agent on a private bus, the
+# wiring, and (in the OWL container) offscreen shots.
+if command -v node >/dev/null; then
+  node test/call-model.js >/dev/null || { node test/call-model.js; fail "call card model"; }
+fi
+python3 -B -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' bin/omamobile-call-watch || fail "omamobile-call-watch parses"
+if command -v dbus-run-session >/dev/null; then
+  if ! out=$(dbus-run-session -- python3 -B test/call-watch.py 2>&1); then
+    grep -v '^ok' <<<"$out" || true
+    fail "omamobile-call-watch"
+  fi
+fi
+python3 -c 'import json; assert {"id": "omamobile.call"} in json.load(open("profile/shell.json"))["plugins"]' \
+  || fail "the profile turns calls on"
+grep -c 'add_plugin omamobile.call' bin/omamobile-setup-user >/dev/null || fail "existing users get calls"
+grep -c 'namespace = "\^omamobile-call(-top)?\$" }, above_lock = 2' hypr/phone.lua >/dev/null || fail "the call card works over the lock"
+if grep -nE 'Dial|execDetached\(\["(sh|bash)' plugins/omamobile.call/*.qml plugins/omamobile.call/*.js | grep -v '^.*://' | grep -c . >/dev/null; then
+  fail "the call card never dials or runs a shell"
+fi
+if [[ -n ${OMAMOBILE_CALL_RENDER:-} ]]; then
+  bash test/call-render "$OMAMOBILE_CALL_RENDER" >/dev/null || fail "call card render"
+fi
+if command -v node >/dev/null; then
+  node test/status-model.js >/dev/null || { node test/status-model.js; fail "status bar model"; }
+fi
+python3 -B -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' bin/omamobile-cell-watch || fail "omamobile-cell-watch parses"
+if command -v dbus-run-session >/dev/null; then
+  if ! out=$(dbus-run-session -- python3 -B test/cell-watch.py 2>&1); then
+    grep -v '^ok' <<<"$out" || true
+    fail "omamobile-cell-watch"
+  fi
+fi
+grep -c 'function emergency()' plugins/omamobile.call/Call.qml >/dev/null || fail "the lock's Emergency call button has its warning"
+grep -c "Emergency calls (911, 112) don't work on this phone yet. Keep another phone for emergencies." plugins/omamobile.call/EmergencyInfo.qml >/dev/null \
+  || fail "the emergency warning keeps the plan's words (TELEPHONY-APPS-PLAN §3.2)"
+pass "calls: model, watcher, wiring; the bar's network and call chip; the emergency warning"
 python3 -c 'import json; assert {"id": "omamobile.access"} in json.load(open("profile/shell.json"))["plugins"]' \
   || fail "the phone profile enables the permission sheet"
 grep -c 'add_plugin omamobile.access' bin/omamobile-setup-user >/dev/null || fail "existing users get the permission sheet"

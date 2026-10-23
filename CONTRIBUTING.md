@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Contributing to Omarchy Mobile
 
-Omarchy Mobile runs native Omarchy on Google Pixel phones: Arch Linux ARM, Hyprland and Omarchy's own packages on a mainline Linux kernel, with no Android underneath. It works today on the Pixel 7 Pro (`cheetah`, Google Tensor G2 / `gs201`). We want help with two things: bringing up more Pixels, and getting our device-tree and driver work merged upstream.
+Omarchy Mobile runs native Omarchy on mobile devices: Arch Linux ARM, Hyprland and Omarchy's own packages on a mainline Linux kernel, with no Android underneath. It works today on the Pixel 7 Pro (`cheetah`, Google Tensor G2 / `gs201`). We want help with two things: bringing up more devices (other Pixels first, since they share the most with it), and getting our device-tree and driver work merged upstream.
 
 - **Supported devices and their status:** [docs/DEVICES.md](docs/DEVICES.md)
 - **What's missing and the order we plan to tackle it:** [docs/ROADMAP.md](docs/ROADMAP.md)
@@ -275,8 +275,8 @@ Findings that matter beyond one subsystem go into `device/<codename>/NOTES.md`, 
   - `make dt_binding_check DT_SCHEMA_FILES=<your schemas>`;
   - `make CHECK_DTBS=y W=1 exynos/google/<soc>-<codename>.dtb` (or `dt-validate`), with no new warnings, also with your bring-up overlays applied.
 
-  The plans record these results (for example [HAPTICS-TORCH-PLAN.md](device/cheetah/HAPTICS-TORCH-PLAN.md)).
-- **New hardware is `disabled` by default.** A separate, later commit turns it on once it has passed on the phone.
+  The plans record these results (for example [HAPTICS-TORCH-PLAN.md](device/cheetah/HAPTICS-TORCH-PLAN.md)). `tools/kernel-pr-check --build OUT BASE` in this repository runs the sign-off, prefix, checkpatch and identifier checks and the `W=1`, `dtbs_check` and `dt_binding_check` builds on your branch's commits, comparing device-tree warnings against the base, and the review runs it too.
+- **New hardware is `disabled` by default.** A separate, later commit turns it on once it has passed on the phone. One exception: a board node whose pins, flags and driver are already proven on another phone with the same SoC (the Pixel Fold's volume keys, wired as the Pixel 7 Pro's) may be added enabled in one commit, once it has passed on your phone; say which phone's node it matches.
 - **Code imported from Google's GPL tree** keeps its copyright and is marked as such. Port it to upstream APIs and style before proposing it for `omamobile`.
 - **Sending upstream:** the published `omamobile` branch sits on one squashed commit that holds the tree of the upstream tag (see [`tools/publish-kernel`](tools/publish-kernel)). Rebase your commits onto the real tag (`git rebase --onto v7.3-rc6 <squashed base>`), run `scripts/get_maintainer.pl`, and follow `Documentation/process/submitting-patches.rst`.
 - **Sign-off and AI tools.** Upstream needs your own `Signed-off-by:` (the DCO). If an AI assistant helped, follow `Documentation/process/coding-assistants.rst`: the human signs off, the AI never does, and its help is credited with an `Assisted-by:` tag.
@@ -288,11 +288,33 @@ Findings that matter beyond one subsystem go into `device/<codename>/NOTES.md`, 
 - **Every file has an SPDX header** (§7).
 - **Packages** follow the existing layout: `PKGBUILD`, `install`, `version`, `README.md`, and `test/all`, which must pass. Device packages are named `omamobile-device-<codename>`. Nothing in them is enabled unless it's safe at boot, with hang markers where needed.
 - **Keep identifying data out.** No Wi-Fi names, MAC or Bluetooth addresses, serial numbers, IMEIs, account names or captures: use placeholders such as `<SSID>`. Screenshots must not show any of these either.
-- **Open a PR** with what you ran on the phone, the kernel release, and the plan section it follows. Kernel PRs go to your fork's topic branch against linux-omarchy-mobile's `omamobile`; everything else to this repository's `main`. A new device's first PR here is usually its `device/<codename>/device.conf` and notes (§5).
+- **Open a PR** with what you ran on the phone, the kernel release, and the plan section it follows, after the checks and the smoke test in §6.5. Kernel PRs go to your fork's topic branch against linux-omarchy-mobile's `omamobile`; everything else to this repository's `main`. A new device's first PR here is usually its `device/<codename>/device.conf` and notes (§5).
 
 ### 6.4 Adding your device to the matrix
 
 Add a row to [docs/DEVICES.md](docs/DEVICES.md) in the same PR as your device notes. Only claim "works" for what you've verified on your own phone, and link the notes entry that shows it.
+
+### 6.5 Before you open a pull request: the checks and the smoke test
+
+Every pull request runs the same checks in CI (`.github/workflows/checks.yml`), and a reviewer looks at a PR only once they pass. Run them yourself first; none needs a phone:
+
+```sh
+tools/pr-check origin/main   # no identifiers, no blobs, no AI Signed-off-by, scripts parse
+tests/all                    # the installer, the images, the storage guard and the rest
+tests/packages               # every package's own test/all (or name the ones you touched)
+```
+
+**Then run the smoke test on your own phone,** booted into the build your change is in:
+
+```sh
+tools/phone-smoke            # from the laptop, over tools/phone-ssh
+```
+
+It is read-only and safe on a phone in use: no writes, no register reads, no sound, vibration or torch. It checks the boot slot, the storage guard, the root on `userdata`, kernel health, USB, the session, and then the display, GPU, touch, buttons, Wi-Fi, Bluetooth, battery, sound cards, sensors and cameras as evidence. Its report names no phone (no serial, MAC, SSID or command line). **Paste the report into the pull request,** with the plan steps your change passed. A change to a package, the kernel or a device needs a report from the phone it affects; a change to docs or tools that never runs on a phone doesn't.
+
+A pull request that touches a device also states which phone it was tested on. We can't check that you own the phone, so we rely on you: say exactly what ran, what didn't, and what you didn't test.
+
+The pull request template (`.github/pull_request_template.md`) has the checklist.
 
 ## 7. Licensing and vendor firmware
 
