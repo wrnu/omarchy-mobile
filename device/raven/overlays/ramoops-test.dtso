@@ -1,0 +1,19 @@
+// SPDX-License-Identifier: MIT
+/*
+ * Bring-up: stock raven's ramoops region, at the address and in the layout
+ * of the stock DT (CP3A.261005.002.A1 vendor_boot), so the kernel log of a
+ * crashed boot survives the warm reset in /sys/fs/pstore. The range is free
+ * RAM in our DT, between debug-kinfo-reserved and bldr-log-reserved. Belongs
+ * in gs101-raven.dts once it has proved itself.
+ */
+/dts-v1/;
+/plugin/;
+
+&{/reserved-memory} {
+	ramoops_mem@fd3ff000 {
+		compatible = "ramoops";
+		reg = <0x00 0xfd3ff000 0x400000>;
+		console-size = <0x200000>;
+		pmsg-size = <0x200000>;
+	};
+};

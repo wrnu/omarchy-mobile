@@ -4,6 +4,34 @@
 Findings from real hardware that matter beyond one subsystem, newest first.
 Details are in the linked plans.
 
+## 2026-10-23: a stock-Android raven needs an AVB footer on boot_b
+
+A second raven (retail MP1.0, stock CP3A.261005.002.A1 on both slots,
+`slider-17.0-15681480`, freshly unlocked, vbmeta never touched) never
+reached the kernel. Each flash fell back to slot A about 33 s later, with
+no USB device and nothing on the screen, whatever changed: compiler (Ubuntu
+clang 18, Android clang 22.0.2), overlays (none, ramoops only), or kernel
+size (40.9 MiB, then 24.8 MiB with other vendors' platforms off).
+
+[V] Stock vbmeta has a Chain Partition descriptor for `boot` (`avbtool
+info_image` on the OTA's vbmeta; `vendor_boot` and `dtbo` are hash
+descriptors). So ABL reads AVB metadata from the end of `boot_b`, and
+fastboot leaves that tail alone: the stale stock footer points into our
+kernel. That is invalid metadata, which libavb treats as fatal even when
+unlocked, unlike a wrong hash or key. The contributor's phone, ex-GrapheneOS,
+had other vbmeta and never hit it.
+
+[V] With an AVB hash footer for the 64 MiB partition (signed with a key ABL
+doesn't know, stock's rollback index 1791158400), the same images boot: USB
+gadget at 20 s, SSH, up past 120 s, the guard as in BRINGUP-M1 R3 (48
+partitions ro), a clean dmesg. `images` now adds the footer from the
+descriptor's `AVB_FOOTERS` (docs/RELEASES.md). The final images, with every
+overlay and the splash command line, give SSH at 8.9 s.
+
+Also seen: the laptop needs a static 172.16.42.2/24 on the "Pixel 6 Pro
+(M1)" interface, and Android 17's bugreport no longer includes pstore
+(SELinux denies it), so a stock boot can't hand over our crash log.
+
 ## 2026-10-20: reinstalled after GrapheneOS
 
 Slot B and userdata reinstalled with `tools/install-phone` (kernel
