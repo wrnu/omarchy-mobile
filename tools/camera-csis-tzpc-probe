@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 #
 # camera-csis-tzpc-probe: stock's order around raven's pd_csis, attended
-# (device/raven/CAMERA-PLAN.md, RC2.0zc-ze), on the phone, with the
+# (device/raven/CAMERA-PLAN.md, RC2.0zc-zg), on the phone, with the
 # camera-csis-tzpc-test overlay. Google's CAL saves D_TZPC_CSIS through
 # EL3 before its first power-off, from the bootloader's state, and
 # restores it after every power-on. Run it under the laptop's log stream
@@ -21,10 +21,15 @@
 # save before it: the power-off that stuck in RC2.0b-r. tzpc_smc is turned
 # off at the end.
 #
+# CMU=1 (both runs): also turn the PD driver's CMU restore on (cmu_restore),
+# so that it writes the overlay's google,cmu-restore registers back after
+# the DTZPC restore, and require each to read back its value.
+#
 # Each register is one 32-bit load through a read-only /dev/mem mapping.
 set -u
 READ=${READ:-none}
 HELD=${HELD:-0}
+CMU=${CMU:-0}
 P=/sys/module/exynos_pm_domains/parameters
 GENPD=/sys/kernel/debug/pm_genpd/pm_genpd_summary
 CLK=/sys/kernel/debug/clk/clk_summary
@@ -47,10 +52,23 @@ wait_state() {
   done
   return 1
 }
-smc_off() { echo N > $P/tzpc_smc; echo "tzpc_smc: $(cat $P/tzpc_smc)"; }
+smc_off() {
+  [ "$CMU" = 1 ] && { echo N > $P/cmu_restore; echo "cmu_restore: $(cat $P/cmu_restore)"; }
+  echo N > $P/tzpc_smc; echo "tzpc_smc: $(cat $P/tzpc_smc)"
+}
+# the PD driver's CMU restore lines this boot: three, each reading back its value
+cmu_check() {
+  local lines bad
+  lines=$(dmesg | grep -E 'Power domain csis: CMU restore 0x')
+  echo "$lines"
+  [ "$(echo "$lines" | grep -c .)" = 3 ] || { echo "not three CMU restore lines"; return 1; }
+  bad=$(echo "$lines" | awk '{ v = $(NF - 2); sub(/,$/, "", v); if (v != $NF) print }')
+  [ -z "$bad" ] || { echo "a CMU register didn't read back its value"; return 1; }
+}
 done_msg() { dmesg | grep -iE 'abort|SError' | tail -3; }
 
 case $READ in none|cmu1|cmu) ;; *) echo "READ is none, cmu1 or cmu"; exit 1 ;; esac
+case $CMU in 0|1) ;; *) echo "CMU is 0 or 1"; exit 1 ;; esac
 [ "$HELD" = 1 ] && [ "$READ" = cmu1 ] && { echo "HELD=1 reads READ=cmu or none"; exit 1; }
 [ "$HELD" = 0 ] && [ "$READ" = cmu ] && { echo "the first run reads READ=cmu1 at most"; exit 1; }
 
@@ -64,6 +82,11 @@ done
 pdn=$(find /proc/device-tree/ -name 'power-domain@17462400' | head -1)
 [ -n "$pdn" ] && [ -e "$pdn/google,keep-boot-on" ] && [ -e "$pdn/google,tzpc-smc" ] || { echo "pd_csis lacks google,keep-boot-on or google,tzpc-smc: stop"; exit 1; }
 [ -w $P/tzpc_smc ] && [ -w $P/release_kept ] || { echo "this kernel has no tzpc_smc or release_kept: stop"; exit 1; }
+if [ "$CMU" = 1 ]; then
+  [ -w $P/cmu_restore ] || { echo "this kernel has no cmu_restore: stop"; exit 1; }
+  [ -e "$pdn/google,cmu-restore" ] || { echo "pd_csis lacks google,cmu-restore: stop"; exit 1; }
+  dmesg | grep -c 'google,cmu-restore ignored' >/dev/null && { echo "the PD driver ignored google,cmu-restore: stop"; exit 1; }
+fi
 dmesg | grep -cE 'Power domain csis (enable|disable) failed' >/dev/null && { echo "pd_csis failed to switch this boot: reboot first"; exit 1; }
 echo "bus: ${dev##*/}"
 
@@ -74,12 +97,15 @@ if [ "$HELD" = 0 ]; then
   [ "$(cat $dev/power/control)" = auto ] || { echo "power/control is not auto: reboot first"; exit 1; }
   [ "$(csis_state)" = on ] || { echo "genpd csis is $(csis_state), not on (kept): stop"; exit 1; }
   [ "$(cat $P/tzpc_smc)" = N ] || { echo "tzpc_smc is already on: reboot first"; exit 1; }
+  [ ! -e $P/cmu_restore ] || [ "$(cat $P/cmu_restore)" = N ] || { echo "cmu_restore is already on: reboot first"; exit 1; }
+  dmesg | grep -cE 'Power domain csis: CMU restore 0x' >/dev/null && { echo "a CMU restore already ran this boot: reboot first"; exit 1; }
   show
 
   # Any stop from here on leaves the calls off; a stuck domain needs a reboot.
   trap 'smc_off; done_msg' EXIT
   mark "DTZPC calls on (tzpc_smc=Y); releasing the kept pd_csis: the save, then its first power-off, from the bootloader's state"
   echo Y > $P/tzpc_smc
+  [ "$CMU" = 1 ] && echo Y > $P/cmu_restore
   echo 1 > $P/release_kept
   if ! wait_state off-0; then
     pdlog 5; show
@@ -98,11 +124,16 @@ if [ "$HELD" = 0 ]; then
   [ "$(cat $dev/power/runtime_status)" = active ] || { echo "the bus is not active: stop"; exit 1; }
   gate | grep -cE 'enable=[1-9].*hw=Y' >/dev/null || { echo "gout_cmu_csis_bus is not on: stop"; exit 1; }
   dmesg | grep -c 'Power domain csis: DTZPC restore 0x1a410204: smc returned 0x0' >/dev/null || { echo "no clean DTZPC restore: stop, no read"; exit 1; }
+  if [ "$CMU" = 1 ]; then cmu_check || { echo "stop, no read"; exit 1; }; fi
 else
   [ "$(cat $dev/power/control)" = on ] || { echo "HELD=1, but power/control is not on: run the first run first"; exit 1; }
   [ "$(csis_state)" = on ] || { echo "HELD=1, but genpd csis is $(csis_state): stop"; exit 1; }
   [ "$(cat $P/tzpc_smc)" = Y ] || { echo "HELD=1, but tzpc_smc is off: stop"; exit 1; }
   dmesg | grep -c 'Power domain csis: DTZPC restore 0x1a410204: smc returned 0x0' >/dev/null || { echo "no clean DTZPC restore this boot: stop"; exit 1; }
+  if [ "$CMU" = 1 ]; then
+    [ "$(cat $P/cmu_restore)" = Y ] || { echo "HELD=1 CMU=1, but cmu_restore is off: stop"; exit 1; }
+    cmu_check || { echo "stop"; exit 1; }
+  fi
   show
   trap 'smc_off; done_msg' EXIT
 fi
@@ -142,7 +173,7 @@ EOF
 fi
 
 if [ "$HELD" = 0 ]; then
-  # Leave the block on and the calls on for the HELD=1 run.
+  # Leave the block on and the calls (and the CMU restore) on for the HELD=1 run.
   trap - EXIT
   mark "the bus stays on, tzpc_smc stays on, for the HELD=1 run"
   show
@@ -155,5 +186,5 @@ else
     echo "pd_csis did not power off"
   fi
   show
-  pdlog 4
+  pdlog 5
 fi

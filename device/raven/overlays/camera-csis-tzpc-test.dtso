@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 /*
- * Bring-up only (CAMERA-PLAN.md, RC2.0zc-ze): stock's order around
+ * Bring-up only (CAMERA-PLAN.md, RC2.0zc-zg): stock's order around
  * pd_csis, attended. Google's CAL saves D_TZPC_CSIS through EL3 before its
  * first power-off, from the bootloader's state, and restores it after
  * every power-on. In RC2.0za CMU_CSIS hung the SoC after our own power-on,
@@ -11,6 +11,11 @@
  *   tzpc_smc set, so that first power-off makes the save.
  * - google,tzpc-smc: D_TZPC_CSIS's need_smc address (stock's
  *   gs101-pm-domains.dtsi).
+ * - google,cmu-restore: the three CMU_CSIS registers a power cycle resets
+ *   (RC2.0ze), with the bootloader's values (RC2.0x): the user mux, the
+ *   controller option and the BUSP divider, in the order stock saves them.
+ *   The PD driver writes them after a clean DTZPC restore, only with its
+ *   cmu_restore parameter set.
  * - The camera-csis-test bus: pd_csis and CMU_TOP's CSIS bus clock
  *   (clock 95, CLK_DOUT_CMU_CSIS_BUS), for the power-on and the read.
  * Replaces camera-csis-test.
@@ -21,6 +26,9 @@
 &pd_csis {
 	google,keep-boot-on;
 	google,tzpc-smc = <0x1a410204>;
+	google,cmu-restore = <0x1a400600 0x00000010>,
+			     <0x1a400800 0xf1000000>,
+			     <0x1a401800 0x00000001>;
 };
 
 &{/soc@0} {
