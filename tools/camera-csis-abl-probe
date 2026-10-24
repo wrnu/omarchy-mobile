@@ -1,0 +1,165 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT
+#
+# camera-csis-abl-probe: read raven's CSIS block as ABL left it
+# (device/raven/CAMERA-PLAN.md, RC2.0h-l), on the phone, with the
+# camera-csis-abl-test overlay: pd_ignore_unused keeps pd_csis in ABL's
+# state, and a simple-pm-bus holds CMU_TOP's CSIS bus clock. Run it under
+# the laptop's log stream and the watchdog:
+#
+#   tools/camera-stage --watchdog x --cmd 'READ=version bash -s' --script tools/camera-csis-abl-probe
+#
+# Every run checks that genpd reads pd_csis on (the state the PD driver
+# read from the PMU at probe; nothing has switched it since), then ungates
+# the bus clock through runtime PM's power/control. Then:
+#   READ=none     nothing more
+#   READ=version  CSIS link 0's version (0x1a440000)
+#   READ=cmu1     one CMU_CSIS register (PLL_CON0_MUX_CLKCMU_CSIS_BUS_USER)
+#   READ=cmu      the 56 registers stock saves at each pd_csis power-off and
+#                 restores after power-on (Google's GPL
+#                 cal-if/gs101/flexpmu_cal_local_gs101.h, csis_save)
+# Each register is one 32-bit load through a read-only /dev/mem mapping.
+# Nothing is written to the block. The EXIT trap gates the clock again;
+# pd_csis stays on, as ABL left it.
+set -u
+READ=${READ:-none}
+GENPD=/sys/kernel/debug/pm_genpd/pm_genpd_summary
+CLK=/sys/kernel/debug/clk/clk_summary
+mark() { echo "camera-csis-abl-probe: $*" > /dev/kmsg; echo "== $*"; }
+csis_state() { awk '$1 == "csis" { print $2 }' $GENPD; }
+gate() { awk '$1 == "gout_cmu_csis_bus" { print "gout_cmu_csis_bus enable=" $2 " prepare=" $3 " hw=" $9 }' $CLK; }
+show() {
+  echo "genpd csis: $(csis_state)"
+  echo "runtime_status: $(cat $dev/power/runtime_status)"
+  gate
+}
+off() {
+  if [ -n "${dev:-}" ]; then
+    echo auto > $dev/power/control
+    sleep 0.2
+    show
+  fi
+  dmesg | grep -iE 'csis|power domain|simple-pm-bus|abort|SError' | tail -5
+}
+
+# name offset, CMU_CSIS at 0x1a400000 unless the offset is a full address
+CMU_REGS="
+PLL_CON0_MUX_CLKCMU_CSIS_BUS_USER 0x0600
+CSIS_CMU_CSIS_CONTROLLER_OPTION 0x0800
+CLK_CON_DIV_DIV_CLK_CSIS_BUSP 0x1800
+QCH_CON_CSISX8_QCH_C2_CSIS 0x3048
+QCH_CON_CSISX8_QCH_CSIS_DMA 0x304c
+QCH_CON_CSISX8_QCH_EBUF 0x3050
+QCH_CON_CSIS_CMU_CSIS_QCH 0x3054
+QCH_CON_D_TZPC_CSIS_QCH 0x3058
+QCH_CON_GPC_CSIS_QCH 0x305c
+QCH_CON_LHM_AST_OTF0_PDPCSIS_QCH 0x3060
+QCH_CON_LHM_AST_OTF1_PDPCSIS_QCH 0x3064
+QCH_CON_LHM_AST_OTF2_PDPCSIS_QCH 0x3068
+QCH_CON_LHM_AST_SOTF0_IPPCSIS_QCH 0x306c
+QCH_CON_LHM_AST_SOTF1_IPPCSIS_QCH 0x3070
+QCH_CON_LHM_AST_SOTF2_IPPCSIS_QCH 0x3074
+QCH_CON_LHM_AST_VO_MCSCCSIS_QCH 0x3078
+QCH_CON_LHM_AST_ZOTF0_IPPCSIS_QCH 0x307c
+QCH_CON_LHM_AST_ZOTF1_IPPCSIS_QCH 0x3080
+QCH_CON_LHM_AST_ZOTF2_IPPCSIS_QCH 0x3084
+QCH_CON_LHM_AXI_D_PDPCSIS_QCH 0x3088
+QCH_CON_LHM_AXI_P_CSIS_QCH 0x308c
+QCH_CON_LHS_AST_OTF0_CSISPDP_QCH 0x3090
+QCH_CON_LHS_AST_OTF1_CSISPDP_QCH 0x3094
+QCH_CON_LHS_AST_OTF2_CSISPDP_QCH 0x3098
+QCH_CON_LHS_AST_VO_CSISPDP_QCH 0x309c
+QCH_CON_LHS_AXI_D0_CSIS_QCH 0x30a0
+QCH_CON_LHS_AXI_D1_CSIS_QCH 0x30a4
+QCH_CON_MIPI_PHY_LINK_WRAP_QCH_CSIS0 0x30a8
+QCH_CON_MIPI_PHY_LINK_WRAP_QCH_CSIS1 0x30ac
+QCH_CON_MIPI_PHY_LINK_WRAP_QCH_CSIS2 0x30b0
+QCH_CON_MIPI_PHY_LINK_WRAP_QCH_CSIS3 0x30b4
+QCH_CON_MIPI_PHY_LINK_WRAP_QCH_CSIS4 0x30b8
+QCH_CON_MIPI_PHY_LINK_WRAP_QCH_CSIS5 0x30bc
+QCH_CON_MIPI_PHY_LINK_WRAP_QCH_CSIS6 0x30c0
+QCH_CON_MIPI_PHY_LINK_WRAP_QCH_CSIS7 0x30c4
+QCH_CON_PPMU_D0_QCH 0x30c8
+QCH_CON_PPMU_D1_QCH 0x30cc
+QCH_CON_QE_CSIS_DMA0_QCH 0x30d0
+QCH_CON_QE_CSIS_DMA1_QCH 0x30d4
+QCH_CON_QE_CSIS_DMA2_QCH 0x30d8
+QCH_CON_QE_CSIS_DMA3_QCH 0x30dc
+QCH_CON_QE_STRP0_QCH 0x30e0
+QCH_CON_QE_STRP1_QCH 0x30e4
+QCH_CON_QE_STRP2_QCH 0x30e8
+QCH_CON_QE_ZSL0_QCH 0x30ec
+QCH_CON_QE_ZSL1_QCH 0x30f0
+QCH_CON_QE_ZSL2_QCH 0x30f4
+QCH_CON_SSMT_D0_QCH 0x30f8
+QCH_CON_SSMT_D1_QCH 0x30fc
+QCH_CON_SYSMMU_D0_CSIS_QCH_S1 0x3100
+QCH_CON_SYSMMU_D0_CSIS_QCH_S2 0x3104
+QCH_CON_SYSMMU_D1_CSIS_QCH_S1 0x3108
+QCH_CON_SYSMMU_D1_CSIS_QCH_S2 0x310c
+QCH_CON_SYSREG_CSIS_QCH 0x3110
+SYSREG_CSIS_BUS_COMPONENT_DRCG_EN 0x1a420104
+SYSREG_CSIS_MEMCLK 0x1a420108
+"
+
+case $READ in
+  none) regs= ;;
+  version) regs="CSIS_LINK0_VERSION 0x1a440000" ;;
+  cmu1) regs=$(echo "$CMU_REGS" | sed -n 2p) ;;
+  cmu) regs=$CMU_REGS ;;
+  *) echo "READ is none, version, cmu1 or cmu"; exit 1 ;;
+esac
+
+dev=
+for d in /sys/bus/platform/devices/*; do
+  case $(readlink -f $d/of_node 2>/dev/null) in */soc@0/bus@1a440000) dev=$d ;; esac
+done
+[ -n "$dev" ] || { echo "no bus@1a440000: camera-csis-abl-test is not in the running DTB"; exit 1; }
+[ -e $dev/of_node/power-domains ] && { echo "the bus holds a power domain: that's camera-csis-test, not camera-csis-abl-test"; exit 1; }
+[ "$(basename "$(readlink -f $dev/driver)")" = simple-pm-bus ] || { echo "${dev##*/} has no simple-pm-bus driver: stop"; exit 1; }
+grep -c pd_ignore_unused /proc/cmdline >/dev/null || { echo "no pd_ignore_unused on the command line: stop"; exit 1; }
+[ "$(cat $dev/power/control)" = auto ] || { echo "power/control is not auto: reboot first"; exit 1; }
+dmesg | grep -c 'Power domain csis' >/dev/null && { echo "pd_csis was switched on this boot: reboot first"; exit 1; }
+echo "bus: ${dev##*/}"
+show
+[ "$(csis_state)" = on ] || { echo "genpd reads pd_csis $(csis_state), not on: the block is unpowered: stop"; exit 1; }
+
+mark "the CSIS bus clock on (runtime PM: power/control on); pd_csis as ABL left it"
+trap off EXIT
+echo on > $dev/power/control; echo "control-exit=$?"
+sleep 0.2
+show
+ok=1
+[ "$(csis_state)" = on ] || { echo "genpd csis is no longer on: stop"; ok=0; }
+[ "$(cat $dev/power/runtime_status)" = active ] || { echo "the bus is not active: stop"; ok=0; }
+gate | grep -cE 'enable=[1-9].*hw=Y' >/dev/null || { echo "gout_cmu_csis_bus is not on: stop"; ok=0; }
+
+if [ -n "$regs" ] && [ $ok = 1 ]; then
+  mark "READ=$READ: $(echo "$regs" | grep -c .) register(s), one 32-bit load each"
+  echo "$regs" | grep . | python3 -c '
+import ctypes, os, sys
+page = os.sysconf("SC_PAGE_SIZE")
+fd = os.open("/dev/mem", os.O_RDONLY | os.O_SYNC)
+libc = ctypes.CDLL(None, use_errno=True)
+libc.mmap.restype = ctypes.c_void_p
+libc.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int,
+                      ctypes.c_int, ctypes.c_int, ctypes.c_long]
+PROT_READ, MAP_SHARED = 1, 1
+maps = {}
+for line in sys.stdin:
+    name, off = line.split()
+    addr = int(off, 0)
+    if addr < 0x10000:
+        addr += 0x1a400000
+    base = addr & ~(page - 1)
+    if base not in maps:
+        m = libc.mmap(None, page, PROT_READ, MAP_SHARED, fd, base)
+        if m is None or m == ctypes.c_void_p(-1).value:
+            sys.exit("mmap: " + os.strerror(ctypes.get_errno()))
+        maps[base] = m
+    val = ctypes.c_uint32.from_address(maps[base] + (addr - base)).value
+    print(f"{name} 0x{addr:08x} = 0x{val:08x}", flush=True)
+'
+  echo "read-exit=$?"
+fi
+mark "gating the bus clock again: power/control auto"

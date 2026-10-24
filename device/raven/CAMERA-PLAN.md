@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Pixel 6 Pro (raven): cameras
 
-Status (2026-10-24): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 passes: the ultrawide's module EEPROM answers (§5); RC1.4 passes: the ultrawide's IMX386 answers with model `0x0386` (§5); RC2.0 (power `pd_csis`, read one CSIS register) offline checks pass, RC2.0a passes; RC2.0b stopped at the power-off (the PD driver's 1 ms wait); RC2.0e-g (a 10 ms wait) next (§4, §5).** No camera driver binds on
+Status (2026-10-24): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 passes: the ultrawide's module EEPROM answers (§5); RC1.4 passes: the ultrawide's IMX386 answers with model `0x0386` (§5); RC2.0 (power `pd_csis`, read one CSIS register) offline checks pass, RC2.0a passes; RC2.0b stopped at the power-off (the PD driver's 1 ms wait); RC2.0e passes, RC2.0f shows the power-off is stuck, not slow; RC2.0h-l (read CSIS and CMU_CSIS in ABL's state) next (§4, §5).** No camera driver binds on
 raven, so there's no `/dev/video*` or `/dev/media*`, and omacam now says "No camera
 found" after 20 s (omacam `4920def`, local). Kernel branch
 `omamobile-gs101-camera` (from `omamobile-gs101-int` `0422abf64`), worktree
@@ -363,6 +363,25 @@ enabled yet), then runtime-suspend, which powers the sensor down again.
   | RC2.0f | RC2.0b again (`READ=0`) | on as before; after `auto`: `csis off-0`, `suspended`, no failure | "disable failed (status 0x…)": record the word (bit 0 still 1: stuck, not slow); stop, no read | the EXIT trap; a reboot | low |
   | RC2.0g | RC2.0c (`READ=1`), only after RC2.0f passed on the same boot | as RC2.0c | as RC2.0c | as RC2.0c | medium |
 
+  RC2.0f showed that `pd_csis` can't be power-cycled yet: after our
+  power-on, its power-off sticks (§5). So RC2.0h-l read the block as ABL
+  hands it over. `camera-csis-abl-test` replaces `camera-csis-test` and
+  sets `pd_ignore_unused`, so genpd keeps every domain in the state it read
+  from the PMU at probe. Its bus holds only the CSIS bus clock, no power
+  domain. `tools/camera-csis-abl-probe` refuses to read unless genpd reads
+  `csis on`, nothing has switched it this boot, and the clock is ungated.
+  The 56 CMU_CSIS and SYSREG_CSIS registers in `READ=cmu` are stock's
+  `csis_save` list: what a restore after power-on needs. Cost while the
+  overlay is in: every unused domain stays on, as before `dcadd701b`.
+
+  | Step | Command | Expect / Pass | Stop if | Rollback | Risk |
+  | --- | --- | --- | --- | --- | --- |
+  | RC2.0h | `images` with `camera-csis-abl-test` (same kernel `gb7be5bb94`), **push (human's go)**; then `grep pd_ignore_unused /proc/cmdline`, the genpd summary, `dmesg` for "Power domain" | boots; `pd_ignore_unused` on the command line; **`csis on`** (ABL leaves it powered, as `dcadd701b`'s measurement implies); the bus `suspended` and under no domain; no "Power domain … failed" | no boot; `csis off-0`: ABL leaves it off, so stop: no read is safe, and the plan needs a power-on path that works | push with `camera-csis-test` (or without either) | low: the pre-`dcadd701b` domain state plus a clock-only bus |
+  | RC2.0i | `tools/camera-stage --watchdog x --cmd 'READ=version bash -s' --script tools/camera-csis-abl-probe` | `csis on` before and after; `gout_cmu_csis_bus` `enable=1 … hw=Y`; "CSIS_LINK0_VERSION 0x1a440000 = 0x05040000" | as RC2.0c (an external abort, a hang, 0 or all ones): record, stop | the EXIT trap; a reboot | medium: the first CSIS read on gs101 |
+  | RC2.0j | as RC2.0i with `READ=cmu1` | one value for `PLL_CON0_MUX_CLKCMU_CSIS_BUS_USER` (`0x1a400600`); no abort | as RC2.0i | as RC2.0i | low after RC2.0i |
+  | RC2.0k | as RC2.0i with `READ=cmu` | 56 values, recorded in §5 (ABL's configuration; not unique to the phone) | as RC2.0i | as RC2.0i | low |
+  | RC2.0l | `tools/phone-smoke` | as before | a regression | reboot | none |
+
   If RC2.0c aborts, the next test is another overlay, used instead of
   `camera-csis-test` (one boot). It sets `&pd_csis` `status = "disabled"`,
   so genpd never cycles the domain and ABL's state stays. Its bus holds only
@@ -694,3 +713,17 @@ taint 0. `csis off-0`, `pdp off-0`, the bus `suspended`. No "Power domain
   never have them, because genpd powers the domain off at boot without a
   save. So the next step is to read what ABL leaves in CMU_CSIS, while
   the domain is still in ABL's state.
+
+### RC2.0h offline checks (2026-10-24, `7.3.0-rc6-omamobile-push1-gb7be5bb94247`): pass
+
+- `camera-csis-abl-test` applies after the other eight overlays, in place
+  of `camera-csis-test`. `/chosen/bootargs` is the DT's own plus
+  `pd_ignore_unused`; raven's ABL merges the DT bootargs with the vendor
+  command line (the live `/proc/cmdline` has both). `bus@1a440000` holds
+  only `cmu_top` clock 95. dtc gives no warnings on the applied tree;
+  `dt-validate` gives 928 lines (the baseline), nothing about `/chosen` or
+  the bus.
+- `tools/camera-csis-abl-probe`: `bash -n` clean; the reader compiles; 56
+  registers, as in stock's `csis_save` (54 in CMU_CSIS, 2 in SYSREG_CSIS).
+- Images built.
+

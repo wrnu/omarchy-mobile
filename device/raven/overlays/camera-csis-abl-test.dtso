@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: MIT
+/*
+ * Bring-up only (CAMERA-PLAN.md, RC2.0h-l): leave the CSIS power domain as
+ * ABL hands it over, so that tools/camera-csis-abl-probe can read CSIS and
+ * CMU_CSIS as ABL configured them. Replaces camera-csis-test: genpd must
+ * not power-cycle pd_csis (RC2.0f: its power-off sticks after our
+ * power-on).
+ *
+ * - pd_ignore_unused: genpd keeps every domain it isn't asked to power
+ *   off in the state it read from the PMU at probe, as before dcadd701b.
+ *   The genpd summary then shows ABL's state, read through the kernel's
+ *   PMU regmap. The rest of the bootargs are the DT's own.
+ * - A simple-pm-bus with CMU_TOP's CSIS bus clock only, no power domain,
+ *   so runtime PM's power/control can ungate gout_cmu_csis_bus without
+ *   genpd touching pd_csis. Clock 95 is CLK_DOUT_CMU_CSIS_BUS
+ *   (include/dt-bindings/clock/google,gs101.h).
+ */
+/dts-v1/;
+/plugin/;
+
+&{/chosen} {
+	bootargs = "console=tty0 panic=10 clk_ignore_unused pd_ignore_unused rdinit=/init mem_sleep_default=s2idle";
+};
+
+&{/soc@0} {
+	bus@1a440000 {
+		compatible = "simple-pm-bus";
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges = <0x0 0x1a440000 0x1000>;
+		clocks = <&cmu_top 95>;
+	};
+};
