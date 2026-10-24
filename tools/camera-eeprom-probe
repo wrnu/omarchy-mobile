@@ -69,7 +69,9 @@ gpio_regs "bb and buck high: expect 99: 0a"
 mark "loading slg51000-regulator (cs high, 10 ms)"
 modprobe slg51000-regulator; echo "modprobe-exit=$?"
 sleep 1
-[ -e /sys/bus/i2c/drivers/slg51000-regulator/0-0075 ] || { echo "slg51000 NOT bound: stop"; exit 1; }
+b=$(echo /sys/bus/i2c/drivers/slg51000-regulator/*-0075)   # bus numbers shift with the overlays
+[ -e "$b" ] || { echo "slg51000 NOT bound: stop"; exit 1; }
+echo "bound: ${b##*/}"
 gpio_regs "cs too: expect 99: 0b"
 
 mark "pu high (S2MPG11 GPIO 4)"

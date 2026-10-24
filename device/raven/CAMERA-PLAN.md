@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Pixel 6 Pro (raven): cameras
 
-Status (2026-10-23): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 (ultrawide EEPROM) built and checked offline, waiting for the push.** No camera driver binds on
+Status (2026-10-23): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3a and RC1.3b pass (§5); RC1.3c (LDO1 on, no read) next.** No camera driver binds on
 raven, so there's no `/dev/video*` or `/dev/media*`, and omacam now says "No camera
 found" after 20 s (omacam `4920def`, local). Kernel branch
 `omamobile-gs101-camera` (from `omamobile-gs101-int` `0422abf64`), worktree
@@ -396,4 +396,21 @@ RC4: IMX586 and IMX663 drivers. RC5: focus (`ak7377`, `sem1215sa`), OIS last.
 - With the overlays, `hsi2c_3` and `usi3` are `okay` and
   `camera-eeprom-ldo1` points at `cam_ldo1`'s phandle. `images` built
   boot, vendor_boot and dtbo with the AVB footer.
+
+### RC1.3a-b on the phone (2026-10-24, `7.3.0-rc6-omamobile-push1-gb9aba32265ec`): pass
+
+- **RC1.3a** `blacklist userspace_consumer` added to
+  `/etc/modprobe.d/omamobile-camera-bringup.conf`.
+- **RC1.3b** pushed (boot_b, vendor_boot_b and dtbo_b written and verified)
+  and booted. `usi@109200c0`, `i2c@10920000` and `pmic@75` `okay`;
+  `camera-eeprom-ldo1` present, unbound; neither `slg51000_regulator` nor
+  `userspace_consumer` loaded; `98-9e` `00 00 3f 00 00 00 3f` as in RC1.1.
+  No new I2C messages. `tools/phone-smoke` as after RC1.2, but for four
+  more dmesg error lines (218), one of them one more AoC mailbox line.
+- **The I2C bus numbers moved.** `hsi2c_3` probes first and takes `i2c-0`,
+  so `hsi2c_7` is now `i2c-1` (the camera PMIC is `1-0075`, the torch
+  `1-0063`) and the MAX77759's bus is `i2c-3`. `omamobile-usb-rescue` finds
+  its bus by address and found `i2c-3`; `camera-eeprom-probe` now finds the
+  PMIC by glob. Never write a bus number into a tool: find it from
+  `of_node`.
 
