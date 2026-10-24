@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Pixel 6 Pro (raven): cameras
 
-Status (2026-10-23): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3a-c pass (§5); RC1.3d (the EEPROM read) next.** No camera driver binds on
+Status (2026-10-23): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 passes: the ultrawide's module EEPROM answers (§5); RC1.4 (the IMX386's ID) next.** No camera driver binds on
 raven, so there's no `/dev/video*` or `/dev/media*`, and omacam now says "No camera
 found" after 20 s (omacam `4920def`, local). Kernel branch
 `omamobile-gs101-camera` (from `omamobile-gs101-int` `0422abf64`), worktree
@@ -434,4 +434,19 @@ as asked**: the `enabled` and `disabled` states are read back from the
 chip's enable register, not from the regulator core. No I2C, regulator or
 other errors after the step began; both modules unloaded and the holder
 exited. `pu` (GPIO 4) switches like the other pins.
+
+### RC1.3d-e on the phone (2026-10-24, `7.3.0-rc6-omamobile-push1-gb9aba32265ec`): pass
+
+- **RC1.3d** (`logs/camera-20261023-220807-x.log`, watchdog armed): the
+  power-up as in RC1.3c, then on `i2c-0` (`hsi2c_3`) "eeprom: ack" for the
+  current-address byte, and the 32 bytes from offset 0 read in one
+  transfer: **20 distinct byte values**, so not blank and not a stuck bus.
+  Power-down as in RC1.3c (`99: 00`, LDO1 `disabled`); no I2C or other
+  errors after the step; both modules unloaded. **The ultrawide's bus, its
+  pull-ups, LDO1 and the EEPROM's address are all as stock describes.**
+  Whether `pu` is needed for the bus isn't known: it was high, as on stock.
+- **RC1.3e** the 32 bytes are in `~/android/reference/raven-camera/`
+  (checksums matched) and gone from the phone. `tools/phone-smoke` as
+  before (216 dmesg error lines; the battery reads "Charging" again, so
+  the "Discharging" after RC1.3b was momentary).
 
