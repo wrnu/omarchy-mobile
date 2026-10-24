@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: MIT
+/*
+ * Bring-up only (CAMERA-PLAN.md, stage RC1.4): enable the ultrawide
+ * camera's bus (USI3, hsi2c_3) and its IMX386 sensor node, so the imx386
+ * driver can power the sensor in stock's order and read its model ID. The
+ * driver is blacklisted (omamobile-camera-bringup.conf) and loads only by
+ * hand from tools/camera-uw-probe, after the camera PMIC is up. Apply with
+ * camera-gpio-test and camera-pmic-test, and not with camera-eeprom-test:
+ * that overlay's LDO1 switch holds the rail exclusively.
+ */
+/dts-v1/;
+/plugin/;
+
+&usi3 {
+	status = "okay";
+};
+
+&hsi2c_3 {
+	status = "okay";
+};
+
+&{/soc@0/usi@109200c0/i2c@10920000/camera-sensor@1a} {
+	status = "okay";
+};
