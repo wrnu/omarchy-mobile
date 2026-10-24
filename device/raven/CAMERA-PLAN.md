@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Pixel 6 Pro (raven): cameras
 
-Status (2026-10-24): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 passes: the ultrawide's module EEPROM answers (§5); RC1.4 passes: the ultrawide's IMX386 answers with model `0x0386` (§5); RC2.0 (power `pd_csis`, read one CSIS register) offline checks pass, RC2.0a passes; RC2.0b stopped at the power-off (the PD driver's 1 ms wait); RC2.0e passes, RC2.0f shows the power-off is stuck, not slow; RC2.0h finds `pd_csis` off at hand-off; RC2.0m passes, RC2.0n shows the power-off sticks without the bus clock too; RC2.0o-p (stock's DTZPC save and restore through EL3) offline checks pass, RC2.0o passes; RC2.0p stops: both DTZPC calls return 0, and the power-off still sticks; stock never powers CSIS without PDP: RC2.0q-r (PDP around the CSIS cycle) offline checks pass, RC2.0q passes, RC2.0r next (§4, §5).** No camera driver binds on
+Status (2026-10-24): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 passes: the ultrawide's module EEPROM answers (§5); RC1.4 passes: the ultrawide's IMX386 answers with model `0x0386` (§5); RC2.0 (power `pd_csis`, read one CSIS register) offline checks pass, RC2.0a passes; RC2.0b stopped at the power-off (the PD driver's 1 ms wait); RC2.0e passes, RC2.0f shows the power-off is stuck, not slow; RC2.0h finds `pd_csis` off at hand-off; RC2.0m passes, RC2.0n shows the power-off sticks without the bus clock too; RC2.0o-p (stock's DTZPC save and restore through EL3) offline checks pass, RC2.0o passes; RC2.0p stops: both DTZPC calls return 0, and the power-off still sticks; stock never powers CSIS without PDP: RC2.0q-r (PDP around the CSIS cycle) offline checks pass, RC2.0q passes; RC2.0r stops: PDP's power-off sticks too, so every power-off after our own power-on sticks; our PD driver writes the whole CONFIGURATION register where stock changes only bit 0, which is next (§4, §5).** No camera driver binds on
 raven, so there's no `/dev/video*` or `/dev/media*`, and omacam now says "No camera
 found" after 20 s (omacam `4920def`, local). Kernel branch
 `omamobile-gs101-camera` (from `omamobile-gs101-int` `0422abf64`), worktree
@@ -948,3 +948,27 @@ SError. `pdp off-0` holds `soc@0:bus@1aa40000` (`simple-pm-bus`,
 before. No "Power domain … failed". As in RC2.0o, the one DTZPC line is
 genpd's unused power-off of `csis` at 0.333 s ("save skipped"): csis read
 on at probe again after RC2.0p's stuck power-off and a warm reboot.
+
+### RC2.0r on the phone (2026-10-24, `7.3.0-rc6-omamobile-push1-g6d15de5fd7f1`): stop, PDP sticks too
+
+`logs/camera-20261024-014151-x.log` (kmsg streamed, watchdog armed).
+`pdp on`, then `csis on`, `active`. Then "Power domain csis disable failed
+(status 0x1)" with PDP still on, and "Power domain pdp disable failed
+(status 0x1)" after it. No abort, taint 0. Both domains stuck on this
+boot.
+
+- **Holding PDP doesn't help, and PDP fails the same way.** So the
+  failure isn't CSIS's: **every power-off that follows our own power-on
+  sticks** (CSIS in RC2.0b, f, n, p, r; PDP in RC2.0r), while genpd's
+  unused power-off of a domain found on at probe works (RC2.0o, q).
+- **Difference found in stock's code:** stock's `csis_on`/`csis_off`
+  (and PDP's) are `PMUCAL_WRITE` with mask `0x1`, and
+  `pmucal_rae_write()` (`pmucal_rae.c:150-162`) read-modify-writes when
+  the mask isn't `U32_MAX`: it changes bit 0 only. Our gs101 support
+  (`4134b5ea0`) writes the whole `CONFIGURATION` register: `0x1` on, `0x0`
+  off. **Our power-on clears every other bit of the domain's
+  CONFIGURATION** [I: which bits, and what they do, is unread]. A
+  domain found on at probe still has the bootloader's other bits,
+  which fits its working power-off.
+- Next, one change: write bit 0 only (`regmap_update_bits`), and log
+  CONFIGURATION through the kernel's PMU regmap (never from userspace).
