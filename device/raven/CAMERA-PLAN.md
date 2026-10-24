@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Pixel 6 Pro (raven): cameras
 
-Status (2026-10-23): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 passes: the ultrawide's module EEPROM answers (§5); RC1.4 (the IMX386's ID) next.** No camera driver binds on
+Status (2026-10-23): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 passes: the ultrawide's module EEPROM answers (§5); RC1.4 (the IMX386's ID) built and checked offline, waiting for the push.** No camera driver binds on
 raven, so there's no `/dev/video*` or `/dev/media*`, and omacam now says "No camera
 found" after 20 s (omacam `4920def`, local). Kernel branch
 `omamobile-gs101-camera` (from `omamobile-gs101-int` `0422abf64`), worktree
@@ -256,8 +256,47 @@ never in a log or the repo. The tool prints only a summary.
 
 On a NACK, check the cheetah lesson first (CAM2.3): try stock's idle state
 for the bus pins before blaming the rail or the address.
-- **RC1.4** the ultrawide's full sequence (LDO1, LDO4, MCLK, reset); read the
-  IMX386 model ID at `0x0016`. Expect `0x0386`. Then power down in reverse.
+**RC1.4: the IMX386's model ID.** Needs kernel `a01f3357a` or later: the
+sensor node `camera-sensor@1a` on `hsi2c_3`, disabled, with stock's reset
+(gpp6-3), MCLK pad (gpp3-0, function 2, 5 mA) and clock (CIS_CLK0), and a
+3 ms enable ramp on LDO1. The `camera-uw-test` overlay enables the bus and
+the node and replaces `camera-eeprom-test` in `DTB_OVERLAYS` (that
+overlay's switch takes LDO1 exclusively).
+
+The two open questions from RC0 and RC1.2 are settled from stock's files:
+
+- **Supplies.** Stock's `sensor-imx386` lists only `ldo1` and `ldo4`
+  (`gs101-raven-camera.dtsi:292-360`): LDO1, 3 ms; LDO4, 1 ms; MCLK, 1 ms;
+  reset, 10 ms; off in reverse (reset, 1 ms, MCLK, 1 ms, LDO4, 3 ms, LDO1).
+  No 1.8 V rail is described, so the module makes its interface and core
+  supplies from LDO1 (3.05 V) [I]. Our node names LDO1 as both `vif` and
+  `vdig` and LDO4 as `vana`; the imx386 driver enables them in that order
+  and LDO1's ramp delay gives the 3 ms. Our power-down has no 3 ms between
+  LDO4 and LDO1.
+- **MCLK.** Raven's own IMX386 init list writes `EXCK_FREQ` (`0x0136`) =
+  `0x1893`, 24.574 MHz: stock tells the sensor it runs from the 24.576 MHz
+  oscillator, which is what `dout_cmu_cis_clk0` gives (RC0.2). CIS_CLK0's
+  other parent (shared0 / 3) can't make 24 MHz either. Stock also names a
+  `GATE_DFTMUX_CMU_CIS_CLK0`; in mainline that's only a Q-channel register,
+  not a clock, and cheetah streams without it [I].
+
+The mode data comes from raven's own camera HAL
+(`tools/extract-camera-data --apex` on `/apex/com.google.pixel.camera.hal.apex`
+from the vendor image; HAL sha256 `42ab61e0…`): 139 init writes, four modes
+(4032x3016 30 fps, 4032x2272 60, 2016x1508 60, 2016x1136 60), link 774.144
+MHz for all but 4032x2272 (794.624 MHz); 774.144 MHz is also the rate in
+cheetah's DT. The file stays off-repo.
+
+The driver's probe: parse the data and the endpoint, power on as above,
+read `0x0016`, register controls (no register writes: runtime PM isn't
+enabled yet), then runtime-suspend, which powers the sensor down again.
+
+| Step | Command | Expect / Pass | Stop if | Rollback | Risk |
+| --- | --- | --- | --- | --- | --- |
+| RC1.4a | `tools/phone-ssh 'echo "blacklist imx386" >> /etc/modprobe.d/omamobile-camera-bringup.conf; mkdir -p /usr/lib/firmware/updates/omamobile/camera'`, then `tools/phone-ssh 'cat > /usr/lib/firmware/updates/omamobile/camera/imx386-uw.bin' < …/imx386-uw.bin` | three blacklist lines; the 1864-byte file, checksum as on the laptop | | remove the line and the file | none |
+| RC1.4b | build `out-raven-camera`, `images` with `camera-uw-test`, **push (human's go)** | boots, `uname -r` has `ga01f3357a`; `camera-sensor@1a` `okay`; an unbound `*-001a` on the `hsi2c_3` bus; `imx386` not loaded; `98-9e` as before | no boot; `imx386` loaded by itself | push `out-raven-aclang` | medium: new kernel |
+| RC1.4c | copy `tools/camera-pmic-gpio` to `/run`, then `tools/camera-stage --watchdog x --cmd 'bash -s' --script tools/camera-uw-probe` | `99: 1b` before the driver; "imx386 …: model 0x0386"; bound, `runtime_status=suspended`; LDO1 and LDO4 `disabled` and `dout_cmu_cis_clk0` enable 0 afterwards; power-down to `99: 00` | "chip ID read failed" (a NACK: MCLK or reset, or the DFTMUX gate) or another ID: the driver has powered down already; record, stop. Any LDO still enabled after probe; I2C errors; a watchdog reset | the EXIT trap (rmmod, `pu`, cs, buck, bb); the hold's dead-man; a reboot | medium: the sensor's first power-up |
+| RC1.4d | `tools/phone-smoke` | as before | a regression | reboot | none |
 
 ### RC2: the first frames from the ultrawide. Risk: medium
 
@@ -449,4 +488,18 @@ exited. `pu` (GPIO 4) switches like the other pins.
   (checksums matched) and gone from the phone. `tools/phone-smoke` as
   before (216 dmesg error lines; the battery reads "Charging" again, so
   the "Discharging" after RC1.3b was momentary).
+
+### RC1.4 offline checks (2026-10-24, `7.3.0-rc6-omamobile-push1-ga01f3357ac7e`): pass
+
+- `out-raven-camera` built from `a01f3357a` (a transient `cp` race in the
+  config merge on the shared volume stopped the first try; the rerun was
+  clean): no new warnings. `checkpatch --strict`: only the missing
+  Signed-off-by.
+- `dt-validate` on `gs101-raven.dtb` and on it with the eight RC1.4
+  overlays (`camera-uw-test` in place of `camera-eeprom-test`): nothing on
+  `camera-sensor@1a`, `cam-uw-mclk-on-pins`, `hsi2c_3` or the PMIC; the
+  same pre-existing findings as for RC1.3.
+- `images` built with `camera-uw-test` and the AVB footer.
+- Raven's mode file (1864 bytes) and DC-PHY file are in
+  `~/android/reference/raven-camera/`.
 

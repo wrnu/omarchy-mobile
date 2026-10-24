@@ -1,0 +1,88 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT
+#
+# camera-uw-probe: power the raven ultrawide's IMX386 and read its model ID
+# (device/raven/CAMERA-PLAN.md, RC1.4), on the phone. Run it under the
+# laptop's log stream and the watchdog:
+#
+#   tools/phone-ssh 'cat > /run/camera-pmic-gpio' < tools/camera-pmic-gpio
+#   tools/camera-stage --watchdog x --cmd 'bash -s' --script tools/camera-uw-probe
+#
+# The camera PMIC comes up as in RC1.3 (bb, buck; slg51000-regulator raises
+# chip select; then pu). Then the imx386 driver loads and does stock's
+# sequence itself: LDO1, 3 ms, LDO4, 1 ms, MCLK, 1 ms, reset released,
+# 10 ms, then reads the model ID at 0x0016 (expect 0x0386). It writes no
+# sensor register at probe. With the ID read it powers the sensor down
+# again (runtime PM), so both LDOs should read off afterwards. Then the
+# driver is unloaded and the PMIC powered down in Google's order.
+set -u
+G=/run/camera-pmic-gpio
+FW=omamobile/camera/imx386-uw.bin
+PMIC=/sys/kernel/debug/regmap/firmware:power-management:pmic-2-pmic/registers
+DT=/sys/firmware/devicetree/base
+gpio_regs() { echo "S2MPG11 GPIO 98-9e ($1):"; grep -E '^9[89a-e]:' "$PMIC" | tr '\n' ' '; echo; }
+mark() { echo "camera-uw-probe: $*" > /dev/kmsg; echo "== $*"; }
+loaded() { grep -c "^$1 " /proc/modules >/dev/null; }
+okay() { tr -d '\0' < "$DT/$1/status" 2>/dev/null | grep -c okay >/dev/null; }
+ldos() {
+  for r in /sys/class/regulator/regulator.*; do
+    n=$(cat $r/name 2>/dev/null)
+    case $n in cam_ldo1|cam_ldo4) printf '%s state=%s microvolts=%s users=%s\n' "$n" "$(cat $r/state)" "$(cat $r/microvolts 2>/dev/null)" "$(cat $r/num_users)" ;; esac
+  done
+}
+mclk() { grep -E ' dout_cmu_cis_clk0 ' /sys/kernel/debug/clk/clk_summary | awk '{print "dout_cmu_cis_clk0 enable=" $2 " prepare=" $3 " rate=" $5}'; }
+off() {
+  loaded imx386 && rmmod imx386
+  loaded slg51000_regulator && rmmod slg51000_regulator
+  # the holder lowers pu, then chip select (10 ms), buck, bb
+  [ -n "${holder:-}" ] && kill "$holder" 2>/dev/null && wait "$holder"
+  gpio_regs "after power-down"
+  ldos
+}
+
+[ -r $G ] || { echo "copy tools/camera-pmic-gpio to $G first"; exit 1; }
+okay soc@0/usi@109600c0/i2c@10960000/pmic@75 || { echo "camera-pmic-test is not in the running DTB"; exit 1; }
+okay soc@0/usi@109200c0/i2c@10920000/camera-sensor@1a || { echo "camera-uw-test is not in the running DTB"; exit 1; }
+[ -d $DT/camera-eeprom-ldo1 ] && { echo "camera-eeprom-test is in the DTB: its switch holds LDO1"; exit 1; }
+for m in slg51000_regulator imx386; do
+  loaded $m && { echo "$m already loaded: reboot first"; exit 1; }
+done
+ls /usr/lib/firmware/updates/$FW /usr/lib/firmware/$FW 2>/dev/null | head -1 | grep -c . >/dev/null ||
+  { echo "no $FW: install the file tools/extract-camera-data wrote"; exit 1; }
+gpio_regs "before"
+mclk
+
+mark "bb, then buck high (S2MPG11 GPIOs 1, 3); pu taken low"
+python3 $G hold --pu --max 60 &
+holder=$!
+trap off EXIT
+sleep 1
+kill -0 $holder 2>/dev/null || { echo "hold exited early"; holder=; exit 1; }
+gpio_regs "bb and buck high: expect 99: 0a"
+
+mark "loading slg51000-regulator (cs high, 10 ms)"
+modprobe slg51000-regulator; echo "modprobe-exit=$?"
+sleep 1
+b=$(echo /sys/bus/i2c/drivers/slg51000-regulator/*-0075)   # bus numbers shift with the overlays
+[ -e "$b" ] || { echo "slg51000 NOT bound: stop"; exit 1; }
+echo "bound: ${b##*/}"
+gpio_regs "cs too: expect 99: 0b"
+
+mark "pu high (S2MPG11 GPIO 4)"
+kill -USR1 $holder; sleep 0.2
+gpio_regs "pu too: expect 99: 1b"
+ldos
+
+mark "loading imx386 (LDO1, 3 ms, LDO4, 1 ms, MCLK, 1 ms, reset, 10 ms, model ID)"
+modprobe imx386; echo "modprobe-exit=$?"
+sleep 1
+dmesg | grep -iE 'imx386|-001a' | tail -10
+s=$(echo /sys/bus/i2c/drivers/imx386/*-001a)
+if [ -e "$s" ]; then
+  echo "bound: ${s##*/} runtime_status=$(cat $s/power/runtime_status)"
+else
+  echo "imx386 NOT bound"
+fi
+ldos
+mclk
+mark "powering down: rmmod, pu, cs, buck, bb"
