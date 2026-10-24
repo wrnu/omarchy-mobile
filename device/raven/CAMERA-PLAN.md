@@ -612,3 +612,12 @@ exited. `pu` (GPIO 4) switches like the other pins.
   reader maps one page `PROT_READ` from `/dev/mem` (`O_SYNC`) and loads
   one aligned 32-bit word.
 
+
+### RC2.0a on the phone (2026-10-24, `7.3.0-rc6-omamobile-push1-ga01f3357ac7e`): pass
+
+`logs/push-raven-camera-5.log`. Same kernel, DTB with `camera-csis-test`.
+Booted; `systemctl is-system-running` `running`, taint 0. genpd: `csis
+off-0`, `pdp off-0`, and `soc@0:bus@1a440000` listed `suspended`, bound to
+`simple-pm-bus`. No "Power domain csis enable/disable failed", no abort or
+SError in the boot log, so the boot-time attach and power-off went through.
+`gout_cmu_csis_bus` enable 0, hardware `N`, as before.
