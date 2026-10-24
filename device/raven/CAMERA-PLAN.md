@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Pixel 6 Pro (raven): cameras
 
-Status (2026-10-23): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3a and RC1.3b pass (§5); RC1.3c (LDO1 on, no read) next.** No camera driver binds on
+Status (2026-10-23): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3a-c pass (§5); RC1.3d (the EEPROM read) next.** No camera driver binds on
 raven, so there's no `/dev/video*` or `/dev/media*`, and omacam now says "No camera
 found" after 20 s (omacam `4920def`, local). Kernel branch
 `omamobile-gs101-camera` (from `omamobile-gs101-int` `0422abf64`), worktree
@@ -413,4 +413,25 @@ RC4: IMX586 and IMX663 drivers. RC5: focus (`ak7377`, `sem1215sa`), OIS last.
   its bus by address and found `i2c-3`; `camera-eeprom-probe` now finds the
   PMIC by glob. Never write a bus number into a tool: find it from
   `of_node`.
+
+### RC1.3c on the phone (2026-10-24, `7.3.0-rc6-omamobile-push1-gb9aba32265ec`): pass
+
+`logs/camera-20261023-215005-x.log` (laptop clock; kmsg streamed, watchdog
+armed). `hsi2c_3` was `i2c-0`.
+
+| Step | `98` (in) | `99` (out) | LDO1 |
+|---|---|---|---|
+| before | 00 | 00 | |
+| bb and buck high | 0a | 0a | |
+| slg51000-regulator bound as `1-0075` (cs) | 0b | 0b | |
+| `pu` high | 1b | 1b | |
+| switch bound (`camera-eeprom-ldo1`) | 1b | 1b | `disabled`, 3050000 µV, 0 users |
+| LDO1 on | 1b | 1b | `enabled`, 3050000 µV, 1 user |
+| after power-down | 00 | 00 | `disabled` |
+
+`9a` and `9e` stayed `3f`. **The first SLG51000 output switched on and off
+as asked**: the `enabled` and `disabled` states are read back from the
+chip's enable register, not from the regulator core. No I2C, regulator or
+other errors after the step began; both modules unloaded and the holder
+exited. `pu` (GPIO 4) switches like the other pins.
 
