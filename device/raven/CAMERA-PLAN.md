@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Pixel 6 Pro (raven): cameras
 
-Status (2026-10-24): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 passes: the ultrawide's module EEPROM answers (§5); RC1.4 passes: the ultrawide's IMX386 answers with model `0x0386` (§5); RC2.0 (power `pd_csis`, read one CSIS register) offline checks pass, runbook ready (§4, §5).** No camera driver binds on
+Status (2026-10-24): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 passes: the ultrawide's module EEPROM answers (§5); RC1.4 passes: the ultrawide's IMX386 answers with model `0x0386` (§5); RC2.0 (power `pd_csis`, read one CSIS register) offline checks pass, RC2.0a passes; RC2.0b stopped at the power-off (the PD driver's 1 ms wait); RC2.0e-g (a 10 ms wait) next (§4, §5).** No camera driver binds on
 raven, so there's no `/dev/video*` or `/dev/media*`, and omacam now says "No camera
 found" after 20 s (omacam `4920def`, local). Kernel branch
 `omamobile-gs101-camera` (from `omamobile-gs101-int` `0422abf64`), worktree
@@ -353,6 +353,16 @@ enabled yet), then runtime-suspend, which powers the sensor down again.
   | RC2.0c | `tools/camera-stage --watchdog x --cmd 'READ=1 bash -s' --script tools/camera-csis-probe` | "csis link 0 version: 0x05040000" (cheetah's, the same IP [I]); off as in RC2.0b; no abort | `python3` killed by an external abort (`SIGBUS`, "synchronous external abort" in dmesg: the DTZPC or CMU state after our power cycle) or a hang (the watchdog resets the phone; save pstore with `--pstore`); `0x00000000` or `0xffffffff`. Record and stop; don't repeat the read | the EXIT trap; a reboot | medium: the first CSIS register read on gs101 |
   | RC2.0d | `tools/phone-smoke` | as before | a regression | reboot | none |
 
+  After RC2.0b's stop (§5), the PD driver waits 10 ms for gs101 domains
+  and prints the status word on a timeout (`b7be5bb94`). RC2.0e-g repeat
+  the power test and then the read on that kernel:
+
+  | Step | Command | Expect / Pass | Stop if | Rollback | Risk |
+  | --- | --- | --- | --- | --- | --- |
+  | RC2.0e | build `out-raven-camera` (`b7be5bb94`), `images` as before, **push (human's go)**; then RC2.0a's checks | `uname -r` has `gb7be5bb94`; `csis off-0`, the bus `suspended`; no "Power domain … failed" for any domain | no boot; any domain's enable or disable failure | push `a01f3357a` images (`out-raven-aclang` if that fails) | medium: new kernel, every gs101 domain's timing |
+  | RC2.0f | RC2.0b again (`READ=0`) | on as before; after `auto`: `csis off-0`, `suspended`, no failure | "disable failed (status 0x…)": record the word (bit 0 still 1: stuck, not slow); stop, no read | the EXIT trap; a reboot | low |
+  | RC2.0g | RC2.0c (`READ=1`), only after RC2.0f passed on the same boot | as RC2.0c | as RC2.0c | as RC2.0c | medium |
+
   If RC2.0c aborts, the next test is another overlay, used instead of
   `camera-csis-test` (one boot). It sets `&pd_csis` `status = "disabled"`,
   so genpd never cycles the domain and ABL's state stays. Its bus holds only
@@ -645,3 +655,13 @@ SError in the boot log, so the boot-time attach and power-off went through.
 - **Next (offline):** in the PD driver, wait as long as stock (5 ms), and on
   a timeout log the STATUS word read through the PMU regmap. That tells a
   slow power-off from a stuck one. Then repeat RC2.0b.
+
+### RC2.0e offline checks (2026-10-24, `7.3.0-rc6-omamobile-push1-gb7be5bb94247`): pass
+
+- `b7be5bb94` "pmdomain: samsung: exynos-pm-domains: wait longer for gs101
+  domains": gs101 domains get 10 ms (Google's CAL: up to 5000 polls of 1
+  µs), other Exynos domains keep 1 ms, and a timeout prints the last
+  status word. `checkpatch --strict` clean on the diff (one older CHECK at
+  the subdomain code); `W=1` with the Android clang: no warnings.
+- Kernel, modules, initramfs and images with all nine overlays, including
+  `camera-csis-test`.
