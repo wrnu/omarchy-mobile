@@ -621,3 +621,27 @@ off-0`, `pdp off-0`, and `soc@0:bus@1a440000` listed `suspended`, bound to
 `simple-pm-bus`. No "Power domain csis enable/disable failed", no abort or
 SError in the boot log, so the boot-time attach and power-off went through.
 `gout_cmu_csis_bus` enable 0, hardware `N`, as before.
+
+### RC2.0b on the phone (2026-10-24, `7.3.0-rc6-omamobile-push1-ga01f3357ac7e`): stop at power-off
+
+`logs/camera-20261023-233319-x.log` (kmsg streamed, watchdog armed).
+
+- **Power-on passed:** `power/control` `on` gave `csis on`,
+  `runtime_status: active`, `gout_cmu_csis_bus enable=1 prepare=1 hw=Y`.
+- **Power-off failed:** `auto` gave "Power domain csis disable failed" 2.5
+  ms after the marker. genpd keeps `csis on` with the bus `suspended`, and
+  the clock reads enable 0 but hardware `Y`. No abort, taint 0, the phone
+  is fine (checked again 30 s later).
+- **The likely cause** [I]: `exynos_pd_power()` gives a domain about 1 ms
+  (10 polls, 80-100 µs apart) to reach the new status. Stock's `csis_off`
+  is the same write and wait, but `pmucal_rae` waits up to 5000 polls of
+  1 µs (`G/drivers/soc/google/cal-if/pmucal_rae.c:108-119`,
+  `flexpmu_cal_local_gs101.h:1039-1042`). Another candidate: simple-pm-bus
+  gates the CSIS bus clock just before genpd powers off. The boot-time
+  power-off at 0.33 s (from ABL's state, clock untouched) worked.
+- **So genpd and the hardware may disagree**: CONFIGURATION was written 0,
+  and the block may have gone off after the timeout. **Nothing reads the
+  block on this boot**; RC2.0c waits for a reboot (the next push does it).
+- **Next (offline):** in the PD driver, wait as long as stock (5 ms), and on
+  a timeout log the STATUS word read through the PMU regmap. That tells a
+  slow power-off from a stuck one. Then repeat RC2.0b.
