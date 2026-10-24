@@ -190,10 +190,35 @@ through the ACPM regmap. Nothing requests a pin.
 
 Bits 5 and up aren't camera pins; record them without judging them.
 Leave the overlay in `DTB_OVERLAYS` once RC1.1 passes; RC1.2 builds on it.
-- **RC1.2** SLG51000: bb, buck, cs; read the chip ID and **every LDO's
-  selector and enable register, read-only**; all outputs stay off. Expect the
-  chip ID to answer within 10 ms of cs. Record the default voltages here.
-  Stop if a selector is outside its DT range.
+
+**RC1.2: the SLG51000's first power-up, read-only.** Needs kernel
+`a937977fc` or later (the disabled `pmic@75` node on `hsi2c_7`) and
+`camera-pmic-test` added to `DTB_OVERLAYS` after `camera-gpio-test`.
+Mainline's binding has only `dlg,cs-gpios`, so `tools/camera-pmic-gpio`
+raises bb (S2MPG11 GPIO 1) and then buck (GPIO 3) through the GPIO
+driver's character device. The kernel does the PMIC writes; the tool has a
+60 s dead-man and never requests GPIO 2 (tele) or 4 (pu). Then
+`slg51000-regulator` loads by hand. It raises cs, waits 10 ms, and reads:
+each LDO's MINV/MAXV range, LDO1/2's voltage range bit, LDO5/6's bypass bit,
+each LDO's selector and the enable matrix (through `regulator` sysfs), and
+the fault log. It writes nothing. The DT's LDOs carry names only, so the
+regulator core sets no voltage. The driver has no OF match table, so the
+node can't autoload it; it's blacklisted anyway. Mainline reads no chip ID:
+the range reads succeeding are the proof that the chip answers.
+
+DT ranges to judge the read voltages by (Google's
+`gs101-raviole-camera-pmic.dtsi`): LDO1 and LDO2 2.25-3.3 V; LDO3, LDO4 and LDO7
+1.2-3.75 V; LDO5 and LDO6 0.5-1.2 V.
+
+| Step | Command | Expect / Pass | Stop if | Rollback | Risk |
+| --- | --- | --- | --- | --- | --- |
+| RC1.2a | `tools/phone-ssh 'echo "blacklist slg51000_regulator" > /etc/modprobe.d/omamobile-camera-bringup.conf'` | the file is there | | `rm` it | none |
+| RC1.2b | build `out-raven-camera`, `images` with `camera-pmic-test`, **push (human's go)** | boots, `uname -r` has `ga937977fc`; `pmic@75` `okay`; an unbound `*-0075` I2C device; `slg51000_regulator` not loaded; `98-9e` as in RC1.1 | no boot; the driver loaded by itself | push `out-raven-aclang` | medium: new kernel |
+| RC1.2c | `tools/phone-ssh 'cat > /run/camera-pmic-gpio' < tools/camera-pmic-gpio`, then `tools/camera-stage --watchdog x --cmd 'bash -s' --script tools/camera-pmic-probe` | `99: 0a` after hold, `0b` after modprobe; driver bound, "Found chip selector property"; seven `cam_ldoN` with `state=disabled` and voltages inside the ranges above; no I2C errors; after power-down `99: 00` | modprobe fails (NACK: the chip didn't power up, maybe the remote bit, §5): the script powers down; record, stop. Any LDO `enabled`: record, stop (it powers down). A voltage outside its range: record, stop. I2C timeouts, or the torch losing its bus. A watchdog reset. | the script's EXIT trap powers down (rmmod, cs, buck, bb); the hold's 60 s dead-man; a reboot | low-medium: the first change to hardware state (camera PMIC inputs on, LDOs off) |
+| RC1.2d | `tools/phone-ssh 'grep -E "^9[89a-e]:" /sys/kernel/debug/regmap/*pmic-2-pmic/registers'`, `tools/phone-smoke` | `99: 00`; smoke as before | anything still high | reboot | read-only |
+
+Record each `cam_ldoN` voltage here: RC1.3 and RC1.4 set them against
+these defaults.
 - **RC1.3** LDO1 only, 1 ms; `hsi2c_3` enabled; read the ultrawide EEPROM
   `0x50` (first 32 bytes, never written, dump kept off-repo). Stop on NACK.
 - **RC1.4** the ultrawide's full sequence (LDO1, LDO4, MCLK, reset); read the
