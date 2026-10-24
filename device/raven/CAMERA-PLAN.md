@@ -792,3 +792,31 @@ skips the clock and refuses `READ=1` when the bus has no `clocks`;
 "Power domain" failure, abort or SError. Whether genpd's attach really
 cycled the domain at boot isn't logged, so this doesn't yet show a clean
 power-off; RC2.0n does.
+
+### RC2.0n on the phone (2026-10-24, `7.3.0-rc6-omamobile-push1-gb7be5bb94247`): stop, still stuck without the clock
+
+`logs/camera-20261024-010136-x.log` (kmsg streamed, watchdog armed).
+
+- Power-on: `csis on`, `active`. The clock was never enabled
+  (`enable=0`), yet **`gout_cmu_csis_bus` reads hardware `Y` as soon as the
+  domain is on**. The gate follows the block's own clock request
+  (hardware-controlled), which explains RC2.0b and RC2.0f's `enable=0
+  hw=Y`.
+- Power-off: **"Power domain csis disable failed (status 0x1)"** again. So
+  gating the bus clock was not the cause. No abort, taint 0.
+- **What's left that stock does and we don't:** stock's `exynos-pd.c`
+  `__exynos_pd_power_off()` adds only idle-IP bookkeeping and BTS
+  scitokens around `cal_pd_control()`, and `cmu_id` serves only
+  `cmucal-debug.c`. Inside `cal_pd_control()` (`pmucal_local.c`), stock
+  runs the DTZPC SMC on every cycle. Power-off: save the CMU registers
+  (reads), then the save SMC (`0x82000410`, mode 0, `0x1a410204`, group 2),
+  then `csis_off`. Power-on: `csis_on`, then the restore SMC (mode 1), even
+  on the first power-on from ABL's off state, then the register restore,
+  which has nothing to restore yet. **The SMC is the one difference left**
+  [I]: EL3 may do part of the power-down handshake for a TrustZone-guarded
+  block.
+- **Risk:** the AoC's save SMC hung EL3 (AUDIO-PLAN R2.1c-d), but BLK_AOC
+  was powered off then. Here CSIS reads on (STATUS 1) when the save would
+  run.
+- The domain is again stuck mid-power-off on this boot: no read; the next
+  push reboots it.
