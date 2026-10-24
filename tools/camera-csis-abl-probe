@@ -3,8 +3,8 @@
 #
 # camera-csis-abl-probe: read raven's CSIS block as ABL left it
 # (device/raven/CAMERA-PLAN.md, RC2.0h-l), on the phone, with the
-# camera-csis-abl-test overlay: pd_ignore_unused keeps pd_csis in ABL's
-# state, and a simple-pm-bus holds CMU_TOP's CSIS bus clock. Run it under
+# camera-csis-abl-test overlay: google,keep-boot-on keeps pd_csis in ABL's
+# state (RC2.0u-x), and a simple-pm-bus holds CMU_TOP's CSIS bus clock. Run it under
 # the laptop's log stream and the watchdog:
 #
 #   tools/camera-stage --watchdog x --cmd 'READ=version bash -s' --script tools/camera-csis-abl-probe
@@ -117,7 +117,9 @@ done
 [ -n "$dev" ] || { echo "no bus@1a440000: camera-csis-abl-test is not in the running DTB"; exit 1; }
 [ -e $dev/of_node/power-domains ] && { echo "the bus holds a power domain: that's camera-csis-test, not camera-csis-abl-test"; exit 1; }
 [ "$(basename "$(readlink -f $dev/driver)")" = simple-pm-bus ] || { echo "${dev##*/} has no simple-pm-bus driver: stop"; exit 1; }
-grep -c pd_ignore_unused /proc/cmdline >/dev/null || { echo "no pd_ignore_unused on the command line: stop"; exit 1; }
+pdn=$(find /proc/device-tree/ -name 'power-domain@17462400' | head -1)
+[ -n "$pdn" ] && [ -e "$pdn/google,keep-boot-on" ] || { echo "pd_csis has no google,keep-boot-on: stop"; exit 1; }
+dmesg | grep -c '17462400.power-domain: left as the bootloader left it' >/dev/null || { echo "the PD driver didn't keep pd_csis on (no sync_state line): stop"; exit 1; }
 [ "$(cat $dev/power/control)" = auto ] || { echo "power/control is not auto: reboot first"; exit 1; }
 dmesg | grep -cE 'Power domain csis (on|off|enable|disable)' >/dev/null && { echo "pd_csis was switched this boot: reboot first"; exit 1; }
 echo "bus: ${dev##*/}"

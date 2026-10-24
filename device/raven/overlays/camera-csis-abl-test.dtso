@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: MIT
 /*
- * Bring-up only (CAMERA-PLAN.md, RC2.0h-l): leave the CSIS power domain as
- * ABL hands it over, so that tools/camera-csis-abl-probe can read CSIS and
- * CMU_CSIS as ABL configured them. Replaces camera-csis-test: genpd must
- * not power-cycle pd_csis (RC2.0f: its power-off sticks after our
- * power-on).
+ * Bring-up only (CAMERA-PLAN.md, RC2.0h-l, RC2.0u-x): leave the CSIS power
+ * domain as the bootloader hands it over (on, RC2.0s), so that
+ * tools/camera-csis-abl-probe can read CMU_CSIS as the bootloader
+ * configured it: the state Google's CAL saves before its first power-off
+ * and restores after every power-on.
  *
- * - pd_ignore_unused: genpd keeps every domain it isn't asked to power
- *   off in the state it read from the PMU at probe, as before dcadd701b.
- *   The genpd summary then shows ABL's state, read through the kernel's
- *   PMU regmap. The rest of the bootargs are the DT's own.
+ * - google,keep-boot-on: the PD driver's bring-up sync_state leaves
+ *   pd_csis on. pd_ignore_unused can't do this: genpd's sync_state powers
+ *   boot-on domains off regardless (RC2.0u).
  * - A simple-pm-bus with CMU_TOP's CSIS bus clock only, no power domain,
  *   so runtime PM's power/control can ungate gout_cmu_csis_bus without
  *   genpd touching pd_csis. Clock 95 is CLK_DOUT_CMU_CSIS_BUS
@@ -18,8 +17,8 @@
 /dts-v1/;
 /plugin/;
 
-&{/chosen} {
-	bootargs = "console=tty0 panic=10 clk_ignore_unused pd_ignore_unused rdinit=/init mem_sleep_default=s2idle";
+&pd_csis {
+	google,keep-boot-on;
 };
 
 &{/soc@0} {
