@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Pixel 6 Pro (raven): cameras
 
-Status (2026-10-24): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 passes: the ultrawide's module EEPROM answers (§5); RC1.4 passes: the ultrawide's IMX386 answers with model `0x0386` (§5); RC2.0 (power `pd_csis`, read one CSIS register) offline checks pass, RC2.0a passes; RC2.0b stopped at the power-off (the PD driver's 1 ms wait); RC2.0e passes, RC2.0f shows the power-off is stuck, not slow; RC2.0h finds `pd_csis` off at hand-off; RC2.0m passes, RC2.0n shows the power-off sticks without the bus clock too; RC2.0o-p (stock's DTZPC save and restore through EL3) offline checks pass, RC2.0o passes; RC2.0p stops: both DTZPC calls return 0, and the power-off still sticks; stock never powers CSIS without PDP: RC2.0q-r (PDP around the CSIS cycle) offline checks pass, RC2.0q passes; RC2.0r stops: PDP's power-off sticks too, so every power-off after our own power-on sticks; our PD driver wrote the whole CONFIGURATION register where stock changes only bit 0: RC2.0s-t (bit 0 only, plus logging) offline checks pass; RC2.0s shows CONFIGURATION holds only bit 0, so that wasn't it; stock restores the CMU state it saved from the bootloader's on state after every power-on, which we never do; RC2.0u-x (read that state) offline checks pass; RC2.0u stops: genpd's sync_state powers boot-on domains off despite `pd_ignore_unused` (so RC2.0h's "off at hand-off" was wrong); RC2.0y (a bring-up sync_state that keeps `pd_csis` on) passes; RC2.0v-x (read the bootloader's CMU_CSIS) next (§4, §5).** No camera driver binds on
+Status (2026-10-24): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 passes: the ultrawide's module EEPROM answers (§5); RC1.4 passes: the ultrawide's IMX386 answers with model `0x0386` (§5); RC2.0 (power `pd_csis`, read one CSIS register) offline checks pass, RC2.0a passes; RC2.0b stopped at the power-off (the PD driver's 1 ms wait); RC2.0e passes, RC2.0f shows the power-off is stuck, not slow; RC2.0h finds `pd_csis` off at hand-off; RC2.0m passes, RC2.0n shows the power-off sticks without the bus clock too; RC2.0o-p (stock's DTZPC save and restore through EL3) offline checks pass, RC2.0o passes; RC2.0p stops: both DTZPC calls return 0, and the power-off still sticks; stock never powers CSIS without PDP: RC2.0q-r (PDP around the CSIS cycle) offline checks pass, RC2.0q passes; RC2.0r stops: PDP's power-off sticks too, so every power-off after our own power-on sticks; our PD driver wrote the whole CONFIGURATION register where stock changes only bit 0: RC2.0s-t (bit 0 only, plus logging) offline checks pass; RC2.0s shows CONFIGURATION holds only bit 0, so that wasn't it; stock restores the CMU state it saved from the bootloader's on state after every power-on, which we never do; RC2.0u-x (read that state) offline checks pass; RC2.0u stops: genpd's sync_state powers boot-on domains off despite `pd_ignore_unused` (so RC2.0h's "off at hand-off" was wrong); RC2.0y (a bring-up sync_state that keeps `pd_csis` on) passes; RC2.0v and RC2.0w pass (the first CMU_CSIS read: `PLL_CON0_MUX_CLKCMU_CSIS_BUS_USER` = `0x10`); RC2.0x (all 56) next (§4, §5).** No camera driver binds on
 raven, so there's no `/dev/video*` or `/dev/media*`, and omacam now says "No camera
 found" after 20 s (omacam `4920def`, local). Kernel branch
 `omamobile-gs101-camera` (from `omamobile-gs101-int` `0422abf64`), worktree
@@ -1122,3 +1122,22 @@ after "genpd: Disabling unused power domains", "exynos-pd
 (google,keep-boot-on)"; no "csis off" line. **`csis on`**, as the
 bootloader handed it over; `pdp off-0` ("pdp off: CONFIGURATION 0x1 ->
 0x0"), as before. RC2.0v-x can run.
+
+### RC2.0v on the phone (2026-10-24, `7.3.0-rc6-omamobile-push1-g2572f3c60926`): pass
+
+`logs/camera-20261024-023550-x.log`. `csis on` before, during and after;
+`gout_cmu_csis_bus` `enable=1 prepare=1 hw=Y` while held, `enable=0 … hw=Y`
+after `auto` (the gate follows the powered block, RC2.0n). No abort.
+
+### RC2.0w on the phone (2026-10-24, `7.3.0-rc6-omamobile-push1-g2572f3c60926`): pass, the first CMU_CSIS read
+
+`logs/camera-20261024-023620-x.log` (kmsg streamed, watchdog armed).
+**`PLL_CON0_MUX_CLKCMU_CSIS_BUS_USER 0x1a400600 = 0x00000010`**, read-exit
+0, no abort, taint 0, `csis on` throughout.
+
+- Bit 4 of an Exynos `PLL_CON0_MUX_*_USER` register is `MUX_SEL` (1: the
+  clock from CMU_TOP, 0: OSCCLK) [I, from the gs101 CMU layout upstream's
+  `clk-gs101.c` uses for other blocks]. So the bootloader has switched the
+  CSIS bus clock to CMU_TOP's `dout_cmu_csis_bus`. If the reset value is 0,
+  a block powered on by us runs its bus from the 24.576 MHz oscillator
+  instead, and stock's restore after each power-on puts the 1 back.
