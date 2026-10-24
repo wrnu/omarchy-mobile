@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Pixel 6 Pro (raven): cameras
 
-Status (2026-10-24): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 passes: the ultrawide's module EEPROM answers (§5); RC1.4 passes: the ultrawide's IMX386 answers with model `0x0386` (§5); RC2.0 (power `pd_csis`, read one CSIS register) offline checks pass, RC2.0a passes; RC2.0b stopped at the power-off (the PD driver's 1 ms wait); RC2.0e passes, RC2.0f shows the power-off is stuck, not slow; RC2.0h finds `pd_csis` off at hand-off; RC2.0m passes, RC2.0n shows the power-off sticks without the bus clock too; RC2.0o-p (stock's DTZPC save and restore through EL3) offline checks pass, push next (§4, §5).** No camera driver binds on
+Status (2026-10-24): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 passes: the ultrawide's module EEPROM answers (§5); RC1.4 passes: the ultrawide's IMX386 answers with model `0x0386` (§5); RC2.0 (power `pd_csis`, read one CSIS register) offline checks pass, RC2.0a passes; RC2.0b stopped at the power-off (the PD driver's 1 ms wait); RC2.0e passes, RC2.0f shows the power-off is stuck, not slow; RC2.0h finds `pd_csis` off at hand-off; RC2.0m passes, RC2.0n shows the power-off sticks without the bus clock too; RC2.0o-p (stock's DTZPC save and restore through EL3) offline checks pass, RC2.0o passes, RC2.0p next (§4, §5).** No camera driver binds on
 raven, so there's no `/dev/video*` or `/dev/media*`, and omacam now says "No camera
 found" after 20 s (omacam `4920def`, local). Kernel branch
 `omamobile-gs101-camera` (from `omamobile-gs101-int` `0422abf64`), worktree
@@ -859,3 +859,25 @@ being `google,tzpc-smc` on `power-domain@17462400`, which has no binding
 refuses to run without the property, the parameter, or with a DTZPC call
 already made this boot, and refuses `READ=1`; `bash -n` clean,
 shellcheck as before.
+
+### RC2.0o on the phone (2026-10-24, `7.3.0-rc6-omamobile-push1-g6d15de5fd7f1`): pass, with a correction
+
+`logs/push-raven-camera-9.log`. Booted, `running`, taint 0, `tzpc_smc`
+`N`, `csis off-0` with the bus `suspended` under it, no "smc returned", no
+failure, no abort or SError.
+
+- **The boot log differs from the prediction:** one line, at 0.334 s right
+  after "PM: genpd: Disabling unused power domains": "Power domain csis:
+  DTZPC save skipped (tzpc_smc=0)". There was no "restore skipped", so our
+  power-on callback never ran at boot. **The PD driver read csis's STATUS
+  as on at probe on this boot**, and genpd powered it off as unused. The
+  bus's attach found the domain already on and called nothing. That
+  power-off completed (no "disable failed").
+- RC2.0h read `off-0` at probe (with `pd_ignore_unused`), so the hand-off
+  state isn't the same every boot. This boot followed RC2.0n's stuck
+  power-off (STATUS 0x1) by a warm reboot; the PMU may keep that state
+  across it [I]. RC2.0a and RC2.0m probably went the same way.
+- §4's "boot cycles `pd_csis`" is wrong as stated: boot powers it off
+  only when it reads on at probe. What stands: **a power-off from the
+  state found at boot works, and the power-off after our own power-on
+  sticks.** RC2.0p's preconditions hold.
