@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Pixel 6 Pro (raven): cameras
 
-Status (2026-10-23): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 passes: the ultrawide's module EEPROM answers (§5); RC1.4 (the IMX386's ID) built and checked offline, waiting for the push.** No camera driver binds on
+Status (2026-10-23): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 passes: the ultrawide's module EEPROM answers (§5); RC1.4a-b pass; RC1.4c (the IMX386's first power-up and ID) next.** No camera driver binds on
 raven, so there's no `/dev/video*` or `/dev/media*`, and omacam now says "No camera
 found" after 20 s (omacam `4920def`, local). Kernel branch
 `omamobile-gs101-camera` (from `omamobile-gs101-int` `0422abf64`), worktree
@@ -502,4 +502,18 @@ exited. `pu` (GPIO 4) switches like the other pins.
 - `images` built with `camera-uw-test` and the AVB footer.
 - Raven's mode file (1864 bytes) and DC-PHY file are in
   `~/android/reference/raven-camera/`.
+
+### RC1.4a-b on the phone (2026-10-24, `7.3.0-rc6-omamobile-push1-ga01f3357ac7e`): pass
+
+- **RC1.4a** `blacklist imx386` added (three lines in
+  `omamobile-camera-bringup.conf`); the mode file installed as
+  `/usr/lib/firmware/updates/omamobile/camera/imx386-uw.bin`, checksum as
+  on the laptop.
+- **RC1.4b** pushed and booted. `camera-sensor@1a` `okay`, `0-001a`
+  (`imx386`) present and unbound, `imx386` not loaded,
+  `camera-eeprom-ldo1` gone; `98-9e` as before. `tools/phone-smoke` as
+  before (141 dmesg error lines, 70 of them the AoC mailbox at boot). The
+  battery read "Discharging" at 94 % on the cable right after this boot,
+  as after RC1.3b, and "Charging" again later that time: the charger
+  settling after boot, not the camera work [I].
 
