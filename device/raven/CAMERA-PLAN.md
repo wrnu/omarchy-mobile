@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Pixel 6 Pro (raven): cameras
 
-Status (2026-10-23): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 passes: the ultrawide's module EEPROM answers (§5); RC1.4a-b pass; RC1.4c (the IMX386's first power-up and ID) next.** No camera driver binds on
+Status (2026-10-23): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 passes: the ultrawide's module EEPROM answers (§5); RC1.4 passes: the ultrawide's IMX386 answers with model `0x0386` (§5); RC2 (the first frames) next.** No camera driver binds on
 raven, so there's no `/dev/video*` or `/dev/media*`, and omacam now says "No camera
 found" after 20 s (omacam `4920def`, local). Kernel branch
 `omamobile-gs101-camera` (from `omamobile-gs101-int` `0422abf64`), worktree
@@ -476,7 +476,7 @@ exited. `pu` (GPIO 4) switches like the other pins.
 
 ### RC1.3d-e on the phone (2026-10-24, `7.3.0-rc6-omamobile-push1-gb9aba32265ec`): pass
 
-- **RC1.3d** (`logs/camera-20261023-220807-x.log`, watchdog armed): the
+- **RC1.3d** (`logs/camera-20261023-220801-x.log`, watchdog armed): the
   power-up as in RC1.3c, then on `i2c-0` (`hsi2c_3`) "eeprom: ack" for the
   current-address byte, and the 32 bytes from offset 0 read in one
   transfer: **20 distinct byte values**, so not blank and not a stuck bus.
@@ -516,4 +516,26 @@ exited. `pu` (GPIO 4) switches like the other pins.
   battery read "Discharging" at 94 % on the cable right after this boot,
   as after RC1.3b, and "Charging" again later that time: the charger
   settling after boot, not the camera work [I].
+
+### RC1.4c-d on the phone (2026-10-24, `7.3.0-rc6-omamobile-push1-ga01f3357ac7e`): pass
+
+`logs/camera-20261023-230229-x.log` (kmsg streamed, watchdog armed).
+
+- The PMIC came up as in RC1.3 (`99`: `0a`, `0b`, `1b`); LDO1 and LDO4
+  off (3.05 V, 2.90 V), `dout_cmu_cis_clk0` at 24576000 Hz, enable 0.
+- `modprobe imx386`: "mode 4032x2272: link frequency 794624000 not in DT,
+  dropped" (expected: the DT lists 774.144 MHz only), then **"imx386
+  0-001a: model 0x0386"** 44 ms after the probe began (15 ms of stock's
+  waits plus the I2C). Bound, `runtime_status=suspended`; LDO1, LDO4 and
+  the MCLK back off. Power-down to `99: 00`.
+- **The ultrawide's whole power path is stock's and works:** PMIC, LDO1
+  and LDO4, MCLK from the oscillator on gpp3-0, reset on gpp6-3, and the
+  sensor at 0x1a on `hsi2c_3`. The DFTMUX gate stock names wasn't needed.
+- No kernel messages after the step but the expected ones (driver lines,
+  SSH audit records). **Correction:** the "no errors after the step"
+  checks for RC1.3c and RC1.3d used an `awk` time filter that never
+  matched (`[` before the number), so they checked nothing; their laptop
+  logs, checked again from each run's start marker, show only the
+  expected driver lines, so the results stand.
+- **RC1.4d** `tools/phone-smoke` as before.
 
