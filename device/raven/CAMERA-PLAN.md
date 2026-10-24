@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Pixel 6 Pro (raven): cameras
 
-Status (2026-10-23): **RC0 done (read-only, §5); RC1.1 passes on the phone (§5); RC1.2 next.** No camera driver binds on
+Status (2026-10-23): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 (ultrawide EEPROM) next.** No camera driver binds on
 raven, so there's no `/dev/video*` or `/dev/media*`, and omacam now says "No camera
 found" after 20 s (omacam `4920def`, local). Kernel branch
 `omamobile-gs101-camera` (from `omamobile-gs101-int` `0422abf64`), worktree
@@ -299,3 +299,50 @@ RC4: IMX586 and IMX663 drivers. RC5: focus (`ak7377`, `sem1215sa`), OIS last.
   133 (138 before the push).
 - Raven's LWIS nodes give power-up sequences only, no `regulator-voltages`,
   so the SLG51000 defaults are still RC1.2's to read.
+
+### RC1.2 on the phone (2026-10-23, `7.3.0-rc6-omamobile-push1-ga937977fcd51`): pass
+
+- **RC1.2a** blacklist in `/etc/modprobe.d/omamobile-camera-bringup.conf`.
+- **RC1.2b** booted; `pmic@75` `okay`; `0-0075` (`slg51000`) present and
+  unbound; the module didn't load by itself; `98-9e` as in RC1.1.
+- **RC1.2c** (`logs/camera-20261023-210643-x*`, watchdog armed):
+
+  | GPIO registers | `98` (in) | `99` (out) | `9a` (out-en) | `9e` (remote) |
+  |---|---|---|---|---|
+  | before | 00 | 00 | 3f | 3f |
+  | bb and buck high | 0a | 0a | 3f | 3f |
+  | cs too (driver bound) | 0b | 0b | 3f | 3f |
+  | after power-down | 00 | 00 | 3f | 3f |
+
+  The input register follows the output, so the pins really switch, and
+  **the remote-control bit doesn't get in the way** (RC1.1's open question).
+  The SLG51000 answered: "Found chip selector property", every range read
+  succeeded, bound as `0-0075`, no I2C errors, and the torch kept its bus.
+  The chip's defaults, all LDOs **off**:
+
+  | LDO | Default | DT range | Used by |
+  |---|---|---|---|
+  | 1 | 3.05 V | 2.25-3.3 V | every part (§1.2) |
+  | 2 | 3.05 V | 2.25-3.3 V | main |
+  | 3 | 2.85 V | 1.2-3.75 V | main |
+  | 4 | 2.90 V | 1.2-3.75 V | ultrawide |
+  | 5 | 1.15 V | 0.5-1.2 V | tele |
+  | 6 | 1.15 V | 0.5-1.2 V | tele |
+  | 7 | 1.80 V | 1.2-3.75 V | front |
+
+  All inside their ranges. LDO1 at 3.05 V is not a 1.8 V I/O rail, so §1.2's
+  "LDO1 is the I/O rail" [I] is probably wrong: it's more likely the
+  analog/EEPROM/AF supply, with the sensors' 1.8 V I/O from elsewhere (as
+  cheetah's `vddio_cam`). Check stock's LWIS power-up lists for an S2MPG
+  LDO before RC1.4. RC1.3 (EEPROM on LDO1) is unaffected: EEPROMs run at 3 V.
+- **The safety net had a gap:** on the Mac, `tools/camera-stage` couldn't
+  start its kmsg stream (`setsid: command not found`) and went ahead anyway,
+  so the laptop has no kernel log of RC1.2c; the phone's own `dmesg` was
+  saved afterwards (nothing hung). Fixed: a Perl `setsid` fallback, and the
+  tool now refuses to touch anything until this run's own start marker has
+  reached the laptop's log.
+- **RC1.2d** `99: 00` again; `tools/phone-smoke` all ok. dmesg error lines
+  went from 133 to 214, all of it 139 `wc-mbox … Try increasing
+  MBOX_TX_QUEUE_LEN` from the AoC mailbox within the first 30 s of boot,
+  before any camera step. Not from this work, but worth watching
+  (AUDIO-PLAN).
