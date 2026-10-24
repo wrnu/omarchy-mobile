@@ -784,3 +784,11 @@ warnings; `dt-validate` gives 928 lines (the baseline). `camera-csis-probe`
 skips the clock and refuses `READ=1` when the bus has no `clocks`;
 `bash -n` clean. Images built.
 
+
+### RC2.0m on the phone (2026-10-24, `7.3.0-rc6-omamobile-push1-gb7be5bb94247`): pass
+
+`logs/push-raven-camera-8.log`. Booted, `running`, taint 0, no
+`pd_ignore_unused`. `csis off-0` with the bus `suspended` under it; no
+"Power domain" failure, abort or SError. Whether genpd's attach really
+cycled the domain at boot isn't logged, so this doesn't yet show a clean
+power-off; RC2.0n does.
