@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Pixel 6 Pro (raven): cameras
 
-Status (2026-10-24): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 passes: the ultrawide's module EEPROM answers (§5); RC1.4 passes: the ultrawide's IMX386 answers with model `0x0386` (§5); RC2.0 (power `pd_csis`, read one CSIS register) offline checks pass, RC2.0a passes; RC2.0b stopped at the power-off (the PD driver's 1 ms wait); RC2.0e passes, RC2.0f shows the power-off is stuck, not slow; RC2.0h finds `pd_csis` off at hand-off; RC2.0m passes, RC2.0n shows the power-off sticks without the bus clock too; RC2.0o-p (stock's DTZPC save and restore through EL3) offline checks pass, RC2.0o passes; RC2.0p stops: both DTZPC calls return 0, and the power-off still sticks; stock never powers CSIS without PDP: RC2.0q-r (PDP around the CSIS cycle) offline checks pass, RC2.0q passes; RC2.0r stops: PDP's power-off sticks too, so every power-off after our own power-on sticks; our PD driver wrote the whole CONFIGURATION register where stock changes only bit 0: RC2.0s-t (bit 0 only, plus logging) offline checks pass; RC2.0s shows CONFIGURATION holds only bit 0, so that wasn't it; stock restores the CMU state it saved from the bootloader's on state after every power-on, which we never do; RC2.0u-x (read that state) offline checks pass; RC2.0u stops: genpd's sync_state powers boot-on domains off despite `pd_ignore_unused` (so RC2.0h's "off at hand-off" was wrong); RC2.0y (a bring-up sync_state that keeps `pd_csis` on) passes; RC2.0v-x pass: the bootloader leaves every CSIS Q-channel disabled with its clock request forced (`QCH_CON` `0x003f0002`), the user mux on CMU_TOP; next, the same registers after our own power-on: RC2.0z-zb offline checks pass, RC2.0z passes, RC2.0za-zb next (§4, §5).** No camera driver binds on
+Status (2026-10-24): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 passes: the ultrawide's module EEPROM answers (§5); RC1.4 passes: the ultrawide's IMX386 answers with model `0x0386` (§5); RC2.0 (power `pd_csis`, read one CSIS register) offline checks pass, RC2.0a passes; RC2.0b stopped at the power-off (the PD driver's 1 ms wait); RC2.0e passes, RC2.0f shows the power-off is stuck, not slow; RC2.0h finds `pd_csis` off at hand-off; RC2.0m passes, RC2.0n shows the power-off sticks without the bus clock too; RC2.0o-p (stock's DTZPC save and restore through EL3) offline checks pass, RC2.0o passes; RC2.0p stops: both DTZPC calls return 0, and the power-off still sticks; stock never powers CSIS without PDP: RC2.0q-r (PDP around the CSIS cycle) offline checks pass, RC2.0q passes; RC2.0r stops: PDP's power-off sticks too, so every power-off after our own power-on sticks; our PD driver wrote the whole CONFIGURATION register where stock changes only bit 0: RC2.0s-t (bit 0 only, plus logging) offline checks pass; RC2.0s shows CONFIGURATION holds only bit 0, so that wasn't it; stock restores the CMU state it saved from the bootloader's on state after every power-on, which we never do; RC2.0u-x (read that state) offline checks pass; RC2.0u stops: genpd's sync_state powers boot-on domains off despite `pd_ignore_unused` (so RC2.0h's "off at hand-off" was wrong); RC2.0y (a bring-up sync_state that keeps `pd_csis` on) passes; RC2.0v-x pass: the bootloader leaves every CSIS Q-channel disabled with its clock request forced (`QCH_CON` `0x003f0002`), the user mux on CMU_TOP; next, the same registers after our own power-on: RC2.0z passes; RC2.0za hangs the SoC: CMU_CSIS, readable in the bootloader's state, hangs after our own power-on; the DTZPC was never saved from the bootloader's state, so its restore had nothing to put back [I] (§4, §5).** No camera driver binds on
 raven, so there's no `/dev/video*` or `/dev/media*`, and omacam now says "No camera
 found" after 20 s (omacam `4920def`, local). Kernel branch
 `omamobile-gs101-camera` (from `omamobile-gs101-int` `0422abf64`), worktree
@@ -1209,3 +1209,31 @@ as before. Images built (`logs/images-raven-camera-16.log`).
 "csis: CONFIGURATION 0x1 STATUS 0x1 at probe", then at 0.329320 s "csis
 off: CONFIGURATION 0x1 -> 0x0", with no failure and no "left as the
 bootloader left it". `csis off-0`, `soc@0:bus@1a440000` `suspended` under it.
+
+### RC2.0za on the phone (2026-10-24, `7.3.0-rc6-omamobile-push1-g2572f3c60926`): stop, the read hangs the SoC
+
+`logs/camera-20261024-024808-x.log` (kmsg streamed, watchdog armed),
+`logs/camera-pstore-20261024-024856` (empty).
+
+- Our power-on: "csis on: CONFIGURATION 0x0 -> 0x1"; `csis on`, `active`,
+  `gout_cmu_csis_bus enable=1 prepare=1 hw=Y`. Every check passed.
+- Then the one load of `0x1a400600` (`PLL_CON0_MUX_CLKCMU_CSIS_BUS_USER`):
+  the last line to reach the laptop is the probe's "READ=cmu1" mark at
+  217.98 s; SSH timed out, the watchdog reset the phone, and it came back on
+  slot B (same kernel, taint 0). **pstore is empty: a bus hang, not an
+  abort.** RC2.0zb doesn't run.
+- **The same register read `0x00000010` in the bootloader's state** (RC2.0w,
+  RC2.0x). So after our power-on the block isn't reachable from the
+  non-secure side, though the PMU reports it on.
+- **What stock does that we don't, around exactly this:** after every
+  power-on it calls EL3's DTZPC restore, then writes the saved CMU
+  registers, which needs the block reachable. Its first power-off, from
+  the bootloader's state, is preceded by the DTZPC save. Ours never saved:
+  at boot the save was skipped (`tzpc_smc=0`), so RC2.0p's restore
+  (returned 0) had nothing to put back. A D_TZPC_CSIS at its reset value
+  (secure-only) would make the block unreachable to Linux [I]; the AoC
+  showed the same pattern (its S2MPU read aborted until AOC_TZPC was
+  restored, `c0872408a`).
+- Next: let the save run at the boot-time power-off, from the bootloader's
+  state (RC2.0p showed the save with the block on returns 0), then power
+  on with the restore and read one register.
