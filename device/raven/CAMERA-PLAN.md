@@ -727,3 +727,33 @@ taint 0. `csis off-0`, `pdp off-0`, the bus `suspended`. No "Power domain
   registers, as in stock's `csis_save` (54 in CMU_CSIS, 2 in SYSREG_CSIS).
 - Images built.
 
+
+### RC2.0h on the phone (2026-10-24, `7.3.0-rc6-omamobile-push1-gb7be5bb94247`): stop, ABL leaves `pd_csis` off
+
+`logs/push-raven-camera-7.log`. Booted, `running`, taint 0;
+`pd_ignore_unused` on the command line; "PM: genpd: Not disabling unused
+power domains"; the bus `suspended` and under no domain; no "Power domain"
+failure.
+
+- **Every gs101 domain the PD driver manages reads `off-0`** with nothing
+  switching them: `csis`, `pdp`, `dns`, `tpu`, `bo`, `tnr`, `gdc`, `mcsc`,
+  `itp`, `ipp`, `g3aa`, `mfc`, `g2d`, `aoc`. That is STATUS as the driver
+  read it from the PMU at probe. These reads are real: the same path read
+  1 after RC2.0b's power-on and `0x1` in RC2.0f's failure. **So ABL hands
+  over BLK_CSIS powered off** (as BLK_AOC, AUDIO-PLAN R2.1f), unlike
+  cheetah. `dcadd701b`'s message ("blocks the bootloader leaves powered")
+  doesn't hold for these domains on this phone; its measured saving needs
+  another explanation.
+- **Stop:** no CSIS read is safe in this state. RC2.0i-k don't run.
+- **Corrections to RC2.0f's analysis:** there was never a working
+  boot-time power-off of CSIS from ABL's state; the domain was never on.
+  And stock's first camera power-on also starts from CMU_CSIS's reset
+  values: it has saved nothing yet, so it restores nothing. So the missing
+  restore can't be the whole difference. What stock does that we don't,
+  around its first cycle: the DTZPC save SMC before the power-off, and its
+  clock handling. Ours gates `gout_cmu_csis_bus` (simple-pm-bus's runtime
+  suspend) just before genpd's power-off, and that gate still read
+  hardware `Y` after the disable, in both RC2.0b and RC2.0f.
+- **Next, one change:** the genpd power cycle without the clock: a bus
+  with `pd_csis` only, no `clocks`, and no read. If the power-off then
+  completes, gating the bus clock before the power-off is what sticks.
