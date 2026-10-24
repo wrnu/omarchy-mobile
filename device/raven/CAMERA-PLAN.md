@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Pixel 6 Pro (raven): cameras
 
-Status (2026-10-24): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 passes: the ultrawide's module EEPROM answers (§5); RC1.4 passes: the ultrawide's IMX386 answers with model `0x0386` (§5); RC2.0 (power `pd_csis`, read one CSIS register) offline checks pass, RC2.0a passes; RC2.0b stopped at the power-off (the PD driver's 1 ms wait); RC2.0e passes, RC2.0f shows the power-off is stuck, not slow; RC2.0h finds `pd_csis` off at hand-off; RC2.0m passes, RC2.0n shows the power-off sticks without the bus clock too; RC2.0o-p (stock's DTZPC save and restore through EL3) offline checks pass, RC2.0o passes; RC2.0p stops: both DTZPC calls return 0, and the power-off still sticks; stock never powers CSIS without PDP: RC2.0q-r (PDP around the CSIS cycle) offline checks pass, RC2.0q passes; RC2.0r stops: PDP's power-off sticks too, so every power-off after our own power-on sticks; our PD driver wrote the whole CONFIGURATION register where stock changes only bit 0: RC2.0s-t (bit 0 only, plus logging) offline checks pass; RC2.0s shows CONFIGURATION holds only bit 0, so that wasn't it; stock restores the CMU state it saved from the bootloader's on state after every power-on, which we never do (§4, §5).** No camera driver binds on
+Status (2026-10-24): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 passes: the ultrawide's module EEPROM answers (§5); RC1.4 passes: the ultrawide's IMX386 answers with model `0x0386` (§5); RC2.0 (power `pd_csis`, read one CSIS register) offline checks pass, RC2.0a passes; RC2.0b stopped at the power-off (the PD driver's 1 ms wait); RC2.0e passes, RC2.0f shows the power-off is stuck, not slow; RC2.0h finds `pd_csis` off at hand-off; RC2.0m passes, RC2.0n shows the power-off sticks without the bus clock too; RC2.0o-p (stock's DTZPC save and restore through EL3) offline checks pass, RC2.0o passes; RC2.0p stops: both DTZPC calls return 0, and the power-off still sticks; stock never powers CSIS without PDP: RC2.0q-r (PDP around the CSIS cycle) offline checks pass, RC2.0q passes; RC2.0r stops: PDP's power-off sticks too, so every power-off after our own power-on sticks; our PD driver wrote the whole CONFIGURATION register where stock changes only bit 0: RC2.0s-t (bit 0 only, plus logging) offline checks pass; RC2.0s shows CONFIGURATION holds only bit 0, so that wasn't it; stock restores the CMU state it saved from the bootloader's on state after every power-on, which we never do; RC2.0u-x (read that state) offline checks pass, push next (§4, §5).** No camera driver binds on
 raven, so there's no `/dev/video*` or `/dev/media*`, and omacam now says "No camera
 found" after 20 s (omacam `4920def`, local). Kernel branch
 `omamobile-gs101-camera` (from `omamobile-gs101-int` `0422abf64`), worktree
@@ -465,6 +465,27 @@ enabled yet), then runtime-suspend, which powers the sensor down again.
 
   If RC2.0t passes, RC2.0u repeats it with `PDP=1` (PDP's own power-off),
   and the CSIS read comes back after that with the clock.
+
+  RC2.0s ruled the CONFIGURATION write out and showed every domain on at
+  hand-off (§5), so RC2.0u-x repeat RC2.0h-k's read of the bootloader's
+  CMU_CSIS state, now that there may be one to read. They read the
+  registers stock saves before its first power-off and restores after
+  every power-on (`csis_save`), the values we never restore. Same kernel
+  (`gafcea63ba`, which logs the probe state); `camera-csis-abl-test`
+  (`pd_ignore_unused`, a bus with the CSIS bus clock and no domain)
+  replaces `camera-csis-pdp-test`. No CSIS link register is read
+  (`READ=version` is skipped).
+
+  | Step | Command | Expect / Pass | Stop if | Rollback | Risk |
+  | --- | --- | --- | --- | --- | --- |
+  | RC2.0u | `images` with `camera-csis-abl-test`, **push (human's go)**; then `tools/phone-ssh 'grep pd_ignore_unused /proc/cmdline; dmesg \| grep -E "Power domain"; grep -E "^(csis\|pdp) " /sys/kernel/debug/pm_genpd/pm_genpd_summary'` | boots; "csis: CONFIGURATION 0x1 STATUS 0x1 at probe"; **`csis on`**; no "on:"/"off:" line for csis (nothing switched it) | no boot; `csis off-0` (as RC2.0h: nothing to read; record the probe line, stop) | push with `camera-csis-pdp-test` | low |
+  | RC2.0v | `tools/camera-stage --watchdog x --cmd 'READ=none bash -s' --script tools/camera-csis-abl-probe` | `csis on` before and after; `gout_cmu_csis_bus` `enable=1 … hw=Y` | the clock doesn't come on; `csis` changes state | the EXIT trap | low: the clock only |
+  | RC2.0w | as RC2.0v with `READ=cmu1` | one value for `PLL_CON0_MUX_CLKCMU_CSIS_BUS_USER` (`0x1a400600`); no abort | an external abort, a hang; stop | the EXIT trap; a reboot | medium: the first CMU_CSIS read on gs101 |
+  | RC2.0x | as RC2.0v with `READ=cmu` | 56 values, recorded in §5 (the bootloader's configuration; not unique to the phone) | as RC2.0w | as RC2.0w | low after RC2.0w |
+
+  The values then go into the save and restore design: compare them with
+  CMU_CSIS's reset values (Google's `cmucal-sfr.c` [I]), and restore the
+  ones that differ after each power-on.
 
   If RC2.0c aborts, the next test is another overlay, used instead of
   `camera-csis-test` (one boot). It sets `&pd_csis` `status = "disabled"`,
@@ -1028,3 +1049,12 @@ bit. No DT or script change.
 - `611093c5b`'s message says the full write cleared other bits; there are
   none. It still matches stock and is harmless, but its message must be
   reworded (or the commit dropped) before it goes anywhere.
+
+### RC2.0u-x offline checks (2026-10-24, kernel `afcea63ba`): pass
+
+`camera-csis-abl-test` applies in place of `camera-csis-pdp-test`;
+`dt-validate` gives 928 lines (the baseline: `google,tzpc-smc` is gone).
+`camera-csis-abl-probe`'s "switched this boot" check now matches only the
+driver's on, off and failure lines, since `afcea63ba` logs "Power domain
+csis: CONFIGURATION … at probe" at every boot. `bash -n` clean,
+shellcheck as before. Images built (`logs/images-raven-camera-14.log`).

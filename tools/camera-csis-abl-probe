@@ -119,7 +119,7 @@ done
 [ "$(basename "$(readlink -f $dev/driver)")" = simple-pm-bus ] || { echo "${dev##*/} has no simple-pm-bus driver: stop"; exit 1; }
 grep -c pd_ignore_unused /proc/cmdline >/dev/null || { echo "no pd_ignore_unused on the command line: stop"; exit 1; }
 [ "$(cat $dev/power/control)" = auto ] || { echo "power/control is not auto: reboot first"; exit 1; }
-dmesg | grep -c 'Power domain csis' >/dev/null && { echo "pd_csis was switched on this boot: reboot first"; exit 1; }
+dmesg | grep -cE 'Power domain csis (on|off|enable|disable)' >/dev/null && { echo "pd_csis was switched this boot: reboot first"; exit 1; }
 echo "bus: ${dev##*/}"
 show
 [ "$(csis_state)" = on ] || { echo "genpd reads pd_csis $(csis_state), not on: the block is unpowered: stop"; exit 1; }
