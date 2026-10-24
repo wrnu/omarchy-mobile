@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Pixel 6 Pro (raven): cameras
 
-Status (2026-10-24): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 passes: the ultrawide's module EEPROM answers (§5); RC1.4 passes: the ultrawide's IMX386 answers with model `0x0386` (§5); RC2.0 (power `pd_csis`, read one CSIS register) offline checks pass, RC2.0a passes; RC2.0b stopped at the power-off (the PD driver's 1 ms wait); RC2.0e passes, RC2.0f shows the power-off is stuck, not slow; RC2.0h finds `pd_csis` off at hand-off; RC2.0m passes, RC2.0n shows the power-off sticks without the bus clock too; RC2.0o-p (stock's DTZPC save and restore through EL3) offline checks pass, RC2.0o passes, RC2.0p next (§4, §5).** No camera driver binds on
+Status (2026-10-24): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 passes: the ultrawide's module EEPROM answers (§5); RC1.4 passes: the ultrawide's IMX386 answers with model `0x0386` (§5); RC2.0 (power `pd_csis`, read one CSIS register) offline checks pass, RC2.0a passes; RC2.0b stopped at the power-off (the PD driver's 1 ms wait); RC2.0e passes, RC2.0f shows the power-off is stuck, not slow; RC2.0h finds `pd_csis` off at hand-off; RC2.0m passes, RC2.0n shows the power-off sticks without the bus clock too; RC2.0o-p (stock's DTZPC save and restore through EL3) offline checks pass, RC2.0o passes; RC2.0p stops: both DTZPC calls return 0, and the power-off still sticks; stock never powers CSIS without PDP, which is next (§4, §5).** No camera driver binds on
 raven, so there's no `/dev/video*` or `/dev/media*`, and omacam now says "No camera
 found" after 20 s (omacam `4920def`, local). Kernel branch
 `omamobile-gs101-camera` (from `omamobile-gs101-int` `0422abf64`), worktree
@@ -881,3 +881,29 @@ failure, no abort or SError.
   only when it reads on at probe. What stands: **a power-off from the
   state found at boot works, and the power-off after our own power-on
   sticks.** RC2.0p's preconditions hold.
+
+### RC2.0p on the phone (2026-10-24, `7.3.0-rc6-omamobile-push1-g6d15de5fd7f1`): stop, the DTZPC calls aren't the difference
+
+`logs/camera-20261024-013250-x.log` (kmsg streamed, watchdog armed).
+
+- **The first DTZPC calls to EL3 on gs101 work:** after the power-on,
+  "DTZPC restore 0x1a410204: smc returned 0x0"; before the power-off,
+  "DTZPC save 0x1a410204: smc returned 0x0". No hang, no reset, taint 0,
+  no abort. (On the AoC they hung only with the block powered off.)
+- **The power-off still sticks:** "Power domain csis disable failed
+  (status 0x1)", 10 ms after the save. `tzpc_smc` back to `N`.
+- Read-only afterwards: the CSIS bus clock chain runs in hardware
+  (`mout_cmu_csis_bus` 399.36 MHz from `dout_cmu_shared2_div2`,
+  `gout_cmu_csis_bus` `Y`, `dout_cmu_csis_bus` 66.56 MHz `Y`), so the
+  block's clock isn't missing. Every other camera domain reads `off-0`.
+- **What stock does differently, from its DT** (`gs101-isp.dtsi`):
+  `lwis_csi`, which owns `0x1a440000`, holds `pd_pdp`, not `pd_csis`, and
+  the camera's top device holds `pd_pdp`, `pd_csis`, `pd_gdc`, `pd_itp`,
+  `pd_mcsc` and `pd_tnr` together, PDP first. **Stock never runs CSIS
+  with PDP off.** CSIS's OTF and VO bridges go to PDP
+  (`LHS_AST_OTF0-2_CSISPDP`, `LHS_AST_VO_CSISPDP`, `LHM_AXI_D_PDPCSIS` in
+  CMU_CSIS's QCH list); a low-power handshake on a bridge whose partner
+  is unpowered may never finish [I]. That would also fit the boot-time
+  power-off that worked (RC2.0o), if PDP was still on when genpd turned
+  CSIS off as unused [I, unchecked].
+- The domain is stuck mid-power-off on this boot: no read.
