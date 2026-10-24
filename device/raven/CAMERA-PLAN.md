@@ -1,11 +1,11 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Pixel 6 Pro (raven): cameras
 
-Status (2026-10-23): **RC0 done (read-only, §5); RC1 not started.** No camera driver binds on
+Status (2026-10-23): **RC0 done (read-only, §5); RC1.1 built and gated, not run.** No camera driver binds on
 raven, so there's no `/dev/video*` or `/dev/media*`, and omacam now says "No camera
-found" after 20 s (omacam `4920def`, local). Kernel branch to create:
-`omamobile-gs101-camera` from `omamobile-gs101-int`, worktree
-`~/android/mainline/wt-raven-camera`, output `~/android/mainline/out-raven-camera`.
+found" after 20 s (omacam `4920def`, local). Kernel branch
+`omamobile-gs101-camera` (from `omamobile-gs101-int` `0422abf64`), worktree
+`$WORK/mainline/wt-raven-camera`, output `$WORK/mainline/out-raven-camera`.
 
 Cheetah's [CAMERA-PLAN](../cheetah/CAMERA-PLAN.md) is the reference: all
 four of its cameras stream through drivers that are already in raven's tree.
@@ -169,11 +169,27 @@ Stop condition: none (read-only). No probing of addresses on any bus.
 
 ### RC1: the camera power path, one change per boot. Risk: low to medium
 
-Each stage is a kernel push and an overlay boot (ASK FIRST). Rollback:
-`reboot-to omamobile` without the overlay (or slot A).
+Each stage is a kernel push with its overlay in the DTB (ASK FIRST). The
+overlay is part of slot B's DTB, so rollback means pushing the previous
+build's images back to slot B (`KERNEL_OUT=…/out-raven-aclang bin/omamobile push`,
+which runs today's `0422abf64` kernel), or using slot A.
 
-- **RC1.1** `gpio-s2mpg11` loads; expect the bank logged, GPIOs 0-4 low.
-  Stop if any of GPIOs 0-4 reads high (ABL left something on: record, stop).
+**RC1.1** needs kernel `omamobile-gs101-camera` (`0422abf64` + the binding, `gpio-s2mpg11`
+and the disabled DT node) built in `out-raven-camera`, and
+`camera-gpio-test` added to `DTB_OVERLAYS` in `device/raven/device.conf`
+for that push only. The driver only reads: registering the chip reads each
+pin's direction, and probe reads `0x98`, `0x99`, `0x9a` and `0x9e` once,
+through the ACPM regmap. Nothing requests a pin.
+
+| Step | Command | Expect / Pass | Stop if | Rollback | Risk |
+| --- | --- | --- | --- | --- | --- |
+| RC1.1a | `KERNEL_DIR=…/wt-raven-camera KERNEL_OUT=…/out-raven-camera bin/omamobile images`, then **push (human's go)** | boots; slot B marked good; `uname -r` has `g23f2d45a3` | no boot, no SSH | slot A falls back; push `out-raven-aclang` | medium: new kernel |
+| RC1.1b | `tools/phone-ssh 'dmesg \| grep -i s2mpg11-gpio; grep -A7 s2mpg11 /sys/kernel/debug/gpio'` | `in … out … out-en … remote …` logged; a 6-line gpiochip, nothing requested | probe error; ACPM errors or timeouts in dmesg | push `out-raven-aclang` | read-only |
+| RC1.1c | record the four values here | bits 0-4 of `out & out-en` all 0 (camera PMIC and tele supply off) | any of bits 0-4 driven high: ABL left part of the camera power on. Record it and stop before RC1.2 | none needed | read-only |
+| RC1.1d | `tools/phone-smoke` | as before the push | a regression | push `out-raven-aclang` | read-only |
+
+Bits 5 and up aren't camera pins; record them without judging them.
+Leave the overlay in `DTB_OVERLAYS` once RC1.1 passes; RC1.2 builds on it.
 - **RC1.2** SLG51000: bb, buck, cs; read the chip ID and **every LDO's
   selector and enable register, read-only**; all outputs stay off. Expect the
   chip ID to answer within 10 ms of cs. Record the default voltages here.
