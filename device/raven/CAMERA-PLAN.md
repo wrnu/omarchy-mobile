@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Pixel 6 Pro (raven): cameras
 
-Status (2026-10-24): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 passes: the ultrawide's module EEPROM answers (§5); RC1.4 passes: the ultrawide's IMX386 answers with model `0x0386` (§5); RC2.0 (power `pd_csis`, read one CSIS register) offline checks pass, RC2.0a passes; RC2.0b stopped at the power-off (the PD driver's 1 ms wait); RC2.0e passes, RC2.0f shows the power-off is stuck, not slow; RC2.0h finds `pd_csis` off at hand-off; RC2.0m passes, RC2.0n shows the power-off sticks without the bus clock too; RC2.0o-p (stock's DTZPC save and restore through EL3) offline checks pass, RC2.0o passes; RC2.0p stops: both DTZPC calls return 0, and the power-off still sticks; stock never powers CSIS without PDP: RC2.0q-r (PDP around the CSIS cycle) offline checks pass, push next (§4, §5).** No camera driver binds on
+Status (2026-10-24): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 passes: the ultrawide's module EEPROM answers (§5); RC1.4 passes: the ultrawide's IMX386 answers with model `0x0386` (§5); RC2.0 (power `pd_csis`, read one CSIS register) offline checks pass, RC2.0a passes; RC2.0b stopped at the power-off (the PD driver's 1 ms wait); RC2.0e passes, RC2.0f shows the power-off is stuck, not slow; RC2.0h finds `pd_csis` off at hand-off; RC2.0m passes, RC2.0n shows the power-off sticks without the bus clock too; RC2.0o-p (stock's DTZPC save and restore through EL3) offline checks pass, RC2.0o passes; RC2.0p stops: both DTZPC calls return 0, and the power-off still sticks; stock never powers CSIS without PDP: RC2.0q-r (PDP around the CSIS cycle) offline checks pass, RC2.0q passes, RC2.0r next (§4, §5).** No camera driver binds on
 raven, so there's no `/dev/video*` or `/dev/media*`, and omacam now says "No camera
 found" after 20 s (omacam `4920def`, local). Kernel branch
 `omamobile-gs101-camera` (from `omamobile-gs101-int` `0422abf64`), worktree
@@ -939,3 +939,12 @@ failure, no abort or SError.
 `pdp` not `off-0`, or after a `pdp` failure this boot; the EXIT trap
 powers CSIS off before PDP. `bash -n` clean, shellcheck as before.
 Images built (`logs/images-raven-camera-12.log`).
+
+### RC2.0q on the phone (2026-10-24, `7.3.0-rc6-omamobile-push1-g6d15de5fd7f1`): pass
+
+`logs/push-raven-camera-10.log`. Booted, `running`, taint 0, no abort or
+SError. `pdp off-0` holds `soc@0:bus@1aa40000` (`simple-pm-bus`,
+`suspended`) besides its `ipp` subdomain; `csis off-0` holds its bus as
+before. No "Power domain … failed". As in RC2.0o, the one DTZPC line is
+genpd's unused power-off of `csis` at 0.333 s ("save skipped"): csis read
+on at probe again after RC2.0p's stuck power-off and a warm reboot.
