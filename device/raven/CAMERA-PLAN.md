@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Pixel 6 Pro (raven): cameras
 
-Status (2026-10-23): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 passes: the ultrawide's module EEPROM answers (§5); RC1.4 passes: the ultrawide's IMX386 answers with model `0x0386` (§5); RC2 (the first frames) next.** No camera driver binds on
+Status (2026-10-24): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 passes: the ultrawide's module EEPROM answers (§5); RC1.4 passes: the ultrawide's IMX386 answers with model `0x0386` (§5); RC2.0 (power `pd_csis`, read one CSIS register) offline checks pass, runbook ready (§4, §5).** No camera driver binds on
 raven, so there's no `/dev/video*` or `/dev/media*`, and omacam now says "No camera
 found" after 20 s (omacam `4920def`, local). Kernel branch
 `omamobile-gs101-camera` (from `omamobile-gs101-int` `0422abf64`), worktree
@@ -106,6 +106,36 @@ doesn't make the DTZPC restore SMC (`0x1a410204`). Cheetah's driver relies
 on ABL leaving the domains on. **A CSIS read with the domain off aborts the
 SoC**, and whether the registers are reachable after genpd powers the domain
 back on without that SMC is unknown [I]. RC2.0 settles it.
+
+What stock does around `pd_csis`, from Google's GPL sources [V]:
+
+- **Power-on is the same two steps as ours.** `csis_on` writes
+  `CSIS_CONFIGURATION` (PMU `0x2400`) bit 0 and waits for `CSIS_STATUS`
+  (`0x2404`) bit 0 (`G/drivers/soc/google/cal-if/gs101/flexpmu_cal_local_gs101.h:922-925`),
+  which is what `exynos-pm-domains.c` does for `google,gs101-pd`.
+- **Around it, stock runs two things we don't.** It runs the DTZPC SMC
+  (`0x82000410`, `RUNTIME_PM_TZPC_GROUP` 2, address `need_smc = 0x1a410204`):
+  save, mode 0, before power-off; restore, mode 1, after power-on
+  (`gs101-pm-domains.dtsi:143-151`, `pmucal_local.c:52-61, 122-130`,
+  `exynos-pd_el3.c:16-38`).
+  It also restores CMU_CSIS's saved registers after power-on (`csis_save`,
+  `:927-…`: `DIV_CLK_CSIS_BUSP`, `PLL_CON0_MUX_CLKCMU_CSIS_BUS_USER`).
+  Without that restore, CMU_CSIS is at its reset values after our power-on,
+  and its user mux selects the oscillator [I]. That is enough for a
+  register read, but streaming will need a CMU_CSIS driver or those two
+  writes.
+- **Stock gs101 claims `pd_csis` only from the CSIS SysMMUs**
+  (`gs101-sysmmu.dtsi:93, 123`). `lwis_csi` names no power domain
+  (`gs101-isp.dtsi:137-…`), and it enables `UMUX_CLKCMU_CSIS_BUS`. On our
+  phone CMU_TOP's `gout_cmu_csis_bus` is gated (hardware `N`, 2026-10-24),
+  so RC2.0 enables it.
+- **Raven evidence on the DTZPC** [I]: BLK_AOC was off at hand-off and
+  powered on by our code, which made no SMC. Its S2MPU then read `0x5`
+  with no abort (AUDIO-PLAN R2.1g), so D_TZPC_AOC's reset state let the
+  non-secure side in. The SMC itself hung EL3 when BLK_AOC was off
+  (R2.1c, R2.1d). So RC2.0 makes no SMC. If the read aborts, the next
+  test leaves `pd_csis` as ABL left it (no genpd for it), which is how
+  cheetah read `0x05040000`.
 
 ## 2. Same and different, in short
 
@@ -300,10 +330,37 @@ enabled yet), then runtime-suspend, which powers the sensor down again.
 
 ### RC2: the first frames from the ultrawide. Risk: medium
 
-- **RC2.0** the CSIS driver with runtime PM: power `pd_csis` and `pd_pdp` on, then read one
-  register, link 0's version at `0x1a440000`. **The first CSIS access on gs101,
-  with no DTZPC SMC:** one register, kmsg streamed, `--watchdog`. Stop on an
-  abort. Next, add the SMC to the PD driver and retry.
+- **RC2.0** power `pd_csis` and read one register, link 0's version at
+  `0x1a440000`: **the first CSIS access on gs101, with no DTZPC SMC.**
+  No kernel change. The `camera-csis-test` overlay adds a `simple-pm-bus`
+  (`/soc@0/bus@1a440000`) that holds `pd_csis` and `CLK_DOUT_CMU_CSIS_BUS`.
+  Runtime PM's `power/control` = `on` powers the block, and `auto` powers it
+  off. `pd_pdp` stays off: on stock the CSIS node names no domain (§1.4).
+  `tools/camera-csis-probe` checks that genpd, runtime PM and the clock
+  all read on, and only then reads the register once, through a
+  read-only `/dev/mem` mapping (raven's root has no `devmem`).
+
+  The overlay changes boot too: genpd powers `pd_csis` on once while it
+  attaches the bus, then off when the bus stays suspended. That is the
+  first gs101 power-on through `google,gs101-pd` on this phone, unattended
+  at boot; RC2.0a reads its result. No driver touches the block's
+  registers at boot.
+
+  | Step | Command | Expect / Pass | Stop if | Rollback | Risk |
+  | --- | --- | --- | --- | --- | --- |
+  | RC2.0a | build `images` with `camera-csis-test` (same kernel, `ga01f3357a`), **push (human's go)**; then `tools/phone-ssh 'grep -E "^csis|bus@1a440000" /sys/kernel/debug/pm_genpd/pm_genpd_summary; dmesg \| grep -iE "power domain\|csis\|simple-pm-bus"'` | boots; `csis off-0` with the bus listed `suspended`; no "Power domain csis enable/disable failed" | no boot (a hang at the boot-time power-on); an enable or disable failure; `csis` not `off-0` | push without `camera-csis-test` (drop it from `DTB_OVERLAYS`); a failed boot falls back to slot A | medium: an unattended first power-on at boot |
+  | RC2.0b | `tools/camera-stage --watchdog x --cmd 'READ=0 bash -s' --script tools/camera-csis-probe` | `csis on`, `runtime_status: active`, `gout_cmu_csis_bus enable=1 … hw=Y`; then after `auto`: `off-0`, `suspended`, `enable=0 … hw=N`; no kernel messages but the markers | the domain doesn't come on (timeout) or doesn't go off; the clock doesn't follow; any abort or SError; a watchdog reset | the EXIT trap (`auto`); a reboot | low: power and clock only, no register |
+  | RC2.0c | `tools/camera-stage --watchdog x --cmd 'READ=1 bash -s' --script tools/camera-csis-probe` | "csis link 0 version: 0x05040000" (cheetah's, the same IP [I]); off as in RC2.0b; no abort | `python3` killed by an external abort (`SIGBUS`, "synchronous external abort" in dmesg: the DTZPC or CMU state after our power cycle) or a hang (the watchdog resets the phone; save pstore with `--pstore`); `0x00000000` or `0xffffffff`. Record and stop; don't repeat the read | the EXIT trap; a reboot | medium: the first CSIS register read on gs101 |
+  | RC2.0d | `tools/phone-smoke` | as before | a regression | reboot | none |
+
+  If RC2.0c aborts, the next test is another overlay, used instead of
+  `camera-csis-test` (one boot). It sets `&pd_csis` `status = "disabled"`,
+  so genpd never cycles the domain and ABL's state stays. Its bus holds only
+  the clock: a `power-domains` reference to a disabled provider would defer
+  the bus forever, and an overlay can't delete the property. If that read
+  passes, the power cycle is the cause, and the PD driver needs the SMC
+  (save before every power-off, so EL3 never restores an empty slot) and
+  the CMU_CSIS restore.
 - **RC2.1** find the ultrawide's link and lanes. Arm all eight links' error
   interrupts, start the sensor streaming, and see which link reports SOT
   activity (cheetah's method, `C/` 4.4).
@@ -538,4 +595,20 @@ exited. `pu` (GPIO 4) switches like the other pins.
   logs, checked again from each run's start marker, show only the
   expected driver lines, so the results stand.
 - **RC1.4d** `tools/phone-smoke` as before.
+
+### RC2.0 offline checks (2026-10-24, `7.3.0-rc6-omamobile-push1-ga01f3357ac7e`): pass
+
+- No kernel change: `camera-csis-test` on the running kernel's DTB. It
+  compiles; `fdtoverlay` applies it after the other eight overlays. The
+  node resolves to `pd_csis` (`power-domain@17462400`) and `cmu_top` clock
+  95 (`CLK_DOUT_CMU_CSIS_BUS`), and dtc gives no warning on the applied
+  tree. `dt-validate`: 928 lines before and after, the same baseline;
+  nothing about `bus@1a440000`.
+- On the phone (read-only): `csis off-0`, `pdp off-0`;
+  `gout_cmu_csis_bus` enable 0, hardware `N` (399.36 MHz parent,
+  `dout_cmu_csis_bus` 66.56 MHz); `simple-pm-bus` is built in (it binds
+  `soc@0`); no `devmem` or busybox on the root, hence the Python reader.
+- `tools/camera-csis-probe`: `bash -n` clean, its reader compiles. The
+  reader maps one page `PROT_READ` from `/dev/mem` (`O_SYNC`) and loads
+  one aligned 32-bit word.
 

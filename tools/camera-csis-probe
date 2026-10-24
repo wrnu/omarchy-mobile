@@ -1,0 +1,80 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT
+#
+# camera-csis-probe: power raven's CSIS block (pd_csis and CMU_TOP's CSIS bus
+# clock) through the camera-csis-test overlay's simple-pm-bus and read one
+# register, CSIS link 0's version (device/raven/CAMERA-PLAN.md, RC2.0), on
+# the phone. Run it under the laptop's log stream and the watchdog:
+#
+#   tools/camera-stage --watchdog x --cmd 'READ=0 bash -s' --script tools/camera-csis-probe
+#
+# READ=0 powers the block and checks that genpd, runtime PM and the clock
+# all report it on, then powers it off again. No register of the block is
+# touched. READ=1 also reads 0x1a440000 once, through a read-only /dev/mem
+# mapping (the mapping can't write), and only if every check passed. The
+# EXIT trap returns the bus to runtime PM's "auto", which powers it off.
+set -u
+READ=${READ:-0}
+ADDR=0x1a440000
+GENPD=/sys/kernel/debug/pm_genpd/pm_genpd_summary
+CLK=/sys/kernel/debug/clk/clk_summary
+mark() { echo "camera-csis-probe: $*" > /dev/kmsg; echo "== $*"; }
+csis_state() { awk '$1 == "csis" { print $2 }' $GENPD; }
+gate() { awk '$1 == "gout_cmu_csis_bus" { print "gout_cmu_csis_bus enable=" $2 " prepare=" $3 " hw=" $9 }' $CLK; }
+show() {
+  echo "genpd csis: $(csis_state)"
+  echo "runtime_status: $(cat $dev/power/runtime_status)"
+  gate
+}
+off() {
+  if [ -n "${dev:-}" ]; then
+    echo auto > $dev/power/control
+    sleep 0.2
+    show
+  fi
+  dmesg | grep -iE 'csis|power domain|simple-pm-bus|abort|SError' | tail -5
+}
+
+dev=
+for d in /sys/bus/platform/devices/*; do
+  case $(readlink -f $d/of_node 2>/dev/null) in */soc@0/bus@1a440000) dev=$d ;; esac
+done
+[ -n "$dev" ] || { echo "no bus@1a440000: camera-csis-test is not in the running DTB"; exit 1; }
+[ "$(basename "$(readlink -f $dev/driver)")" = simple-pm-bus ] || { echo "${dev##*/} has no simple-pm-bus driver: stop"; exit 1; }
+[ "$(cat $dev/power/control)" = auto ] || { echo "power/control is not auto: something holds the block on: reboot first"; exit 1; }
+[ "$(csis_state)" = off-0 ] || { echo "genpd csis is $(csis_state), not off-0: reboot first"; exit 1; }
+echo "bus: ${dev##*/}"
+show
+
+mark "pd_csis on and the CSIS bus clock (runtime PM: power/control on)"
+trap off EXIT
+echo on > $dev/power/control; echo "control-exit=$?"
+sleep 0.2
+show
+ok=1
+[ "$(csis_state)" = on ] || { echo "genpd csis did not come on: stop"; ok=0; }
+[ "$(cat $dev/power/runtime_status)" = active ] || { echo "the bus is not active: stop"; ok=0; }
+gate | grep -cE 'enable=[1-9].*hw=Y' >/dev/null || { echo "gout_cmu_csis_bus is not on: stop"; ok=0; }
+dmesg | grep -iE 'power domain csis' | tail -2
+
+if [ "$READ" = 1 ] && [ $ok = 1 ]; then
+  mark "reading $ADDR (CSIS link 0 version), one 32-bit load"
+  python3 - $ADDR <<'EOF'
+import ctypes, os, sys
+addr = int(sys.argv[1], 0)
+page = os.sysconf("SC_PAGE_SIZE")
+fd = os.open("/dev/mem", os.O_RDONLY | os.O_SYNC)
+libc = ctypes.CDLL(None, use_errno=True)
+libc.mmap.restype = ctypes.c_void_p
+libc.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int,
+                      ctypes.c_int, ctypes.c_int, ctypes.c_long]
+PROT_READ, MAP_SHARED = 1, 1
+base = libc.mmap(None, page, PROT_READ, MAP_SHARED, fd, addr & ~(page - 1))
+if base is None or base == ctypes.c_void_p(-1).value:
+    sys.exit("mmap: " + os.strerror(ctypes.get_errno()))
+val = ctypes.c_uint32.from_address(base + (addr & (page - 1))).value
+print(f"csis link 0 version: 0x{val:08x}")
+EOF
+  echo "read-exit=$?"
+fi
+mark "powering off: power/control auto"
