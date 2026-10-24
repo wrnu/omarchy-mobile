@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Pixel 6 Pro (raven): cameras
 
-Status (2026-10-24): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 passes: the ultrawide's module EEPROM answers (§5); RC1.4 passes: the ultrawide's IMX386 answers with model `0x0386` (§5); RC2.0 (power `pd_csis`, read one CSIS register) offline checks pass, RC2.0a passes; RC2.0b stopped at the power-off (the PD driver's 1 ms wait); RC2.0e passes, RC2.0f shows the power-off is stuck, not slow; RC2.0h finds `pd_csis` off at hand-off; RC2.0m passes, RC2.0n shows the power-off sticks without the bus clock too; RC2.0o-p (stock's DTZPC save and restore through EL3) offline checks pass, RC2.0o passes; RC2.0p stops: both DTZPC calls return 0, and the power-off still sticks; stock never powers CSIS without PDP: RC2.0q-r (PDP around the CSIS cycle) offline checks pass, RC2.0q passes; RC2.0r stops: PDP's power-off sticks too, so every power-off after our own power-on sticks; our PD driver wrote the whole CONFIGURATION register where stock changes only bit 0: RC2.0s-t (bit 0 only, plus logging) offline checks pass, push next (§4, §5).** No camera driver binds on
+Status (2026-10-24): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 passes: the ultrawide's module EEPROM answers (§5); RC1.4 passes: the ultrawide's IMX386 answers with model `0x0386` (§5); RC2.0 (power `pd_csis`, read one CSIS register) offline checks pass, RC2.0a passes; RC2.0b stopped at the power-off (the PD driver's 1 ms wait); RC2.0e passes, RC2.0f shows the power-off is stuck, not slow; RC2.0h finds `pd_csis` off at hand-off; RC2.0m passes, RC2.0n shows the power-off sticks without the bus clock too; RC2.0o-p (stock's DTZPC save and restore through EL3) offline checks pass, RC2.0o passes; RC2.0p stops: both DTZPC calls return 0, and the power-off still sticks; stock never powers CSIS without PDP: RC2.0q-r (PDP around the CSIS cycle) offline checks pass, RC2.0q passes; RC2.0r stops: PDP's power-off sticks too, so every power-off after our own power-on sticks; our PD driver wrote the whole CONFIGURATION register where stock changes only bit 0: RC2.0s-t (bit 0 only, plus logging) offline checks pass; RC2.0s shows CONFIGURATION holds only bit 0, so that wasn't it; stock restores the CMU state it saved from the bootloader's on state after every power-on, which we never do (§4, §5).** No camera driver binds on
 raven, so there's no `/dev/video*` or `/dev/media*`, and omacam now says "No camera
 found" after 20 s (omacam `4920def`, local). Kernel branch
 `omamobile-gs101-camera` (from `omamobile-gs101-int` `0422abf64`), worktree
@@ -998,3 +998,33 @@ gs101 PMU regmap goes through `tensor_sec_update_bits()`, which for a
 PMU_ALIVE register (offset up to 0x3fff; CONFIGURATION is 0x2400 and
 0x2480) writes bit 0 through the set or clear alias and touches no other
 bit. No DT or script change.
+
+### RC2.0s on the phone (2026-10-24, `7.3.0-rc6-omamobile-push1-gafcea63ba00c`): pass, and the bit-0 theory is out
+
+`logs/push-raven-camera-11.log`. Booted, taint 0, no abort, SError or
+"SMC failed".
+
+- **Every gs101 domain read `CONFIGURATION 0x1 STATUS 0x1` at probe:**
+  aoc, g2d, mfc, csis, pdp, g3aa, ipp, itp, mcsc, gdc, tnr, bo, tpu, dns.
+  CONFIGURATION holds nothing but the power bit, so the full write
+  (`4134b5ea0`) and the bit-0 write (`611093c5b`) are the same here.
+  RC2.0t (no other change) would repeat RC2.0n: it doesn't run.
+- At 0.330 s genpd powered all 14 off as unused, each "CONFIGURATION 0x1
+  -> 0x0", **with no failure**. `csis` and `pdp` `off-0`.
+- So on this boot the bootloader handed every domain over on, which
+  contradicts RC2.0h's `off-0` for all of them (that boot used
+  `pd_ignore_unused`, which should have kept the probe state). Not
+  explained; whether the hand-off state depends on the kind of reboot is
+  open.
+- **Where stock differs:** stock's first action on these domains is a
+  power-off from the bootloader's on state, and before it
+  `pmucal_rae_save_seq()` saves the block's CMU registers (`csis_save`: 56,
+  the dividers, the user mux and every QCH_CON). Each later power-on
+  restores them (`pmucal_rae_restore_seq()`, `need_restore`). **Stock
+  never runs a block with its CMU at reset values; we always do after our
+  power-on**, and that is exactly when the power-off sticks. That the
+  power-off handshake runs over Q-channels whose reset configuration
+  doesn't answer is a guess [I].
+- `611093c5b`'s message says the full write cleared other bits; there are
+  none. It still matches stock and is harmless, but its message must be
+  reworded (or the commit dropped) before it goes anywhere.
