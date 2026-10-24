@@ -665,3 +665,10 @@ SError in the boot log, so the boot-time attach and power-off went through.
   the subdomain code); `W=1` with the Android clang: no warnings.
 - Kernel, modules, initramfs and images with all nine overlays, including
   `camera-csis-test`.
+
+### RC2.0e on the phone (2026-10-24, `7.3.0-rc6-omamobile-push1-gb7be5bb94247`): pass
+
+`logs/push-raven-camera-6.log` (modules pushed too). Booted, `running`,
+taint 0. `csis off-0`, `pdp off-0`, the bus `suspended`. No "Power domain
+… failed" for any domain, no abort or SError. The AoC came up as usual
+(sound card, `wlp1s0`, `usb0` present).
