@@ -124,9 +124,11 @@ What stock does around `pd_csis`, from Google's GPL sources [V]:
   and its user mux selects the oscillator [I]. That is enough for a
   register read, but streaming will need a CMU_CSIS driver or those two
   writes.
-- **Stock gs101 claims `pd_csis` only from the CSIS SysMMUs**
-  (`gs101-sysmmu.dtsi:93, 123`). `lwis_csi` names no power domain
-  (`gs101-isp.dtsi:137-…`), and it enables `UMUX_CLKCMU_CSIS_BUS`. On our
+- **Stock gs101 claims `pd_csis` from the CSIS SysMMUs**
+  (`gs101-sysmmu.dtsi:93, 123`) and the camera's top device (with
+  `pd_pdp`, `pd_gdc`, `pd_itp`, `pd_mcsc`, `pd_tnr`; `gs101-isp.dtsi:932`).
+  `lwis_csi` (`gs101-isp.dtsi:137-381`) holds **`pd_pdp`** (line 378;
+  corrected 2026-10-24 after RC2.0p, this said it named none), and it enables `UMUX_CLKCMU_CSIS_BUS`. On our
   phone CMU_TOP's `gout_cmu_csis_bus` is gated (hardware `N`, 2026-10-24),
   so RC2.0 enables it.
 - **Raven evidence on the DTZPC** [I]: BLK_AOC was off at hand-off and
@@ -335,7 +337,8 @@ enabled yet), then runtime-suspend, which powers the sensor down again.
   No kernel change. The `camera-csis-test` overlay adds a `simple-pm-bus`
   (`/soc@0/bus@1a440000`) that holds `pd_csis` and `CLK_DOUT_CMU_CSIS_BUS`.
   Runtime PM's `power/control` = `on` powers the block, and `auto` powers it
-  off. `pd_pdp` stays off: on stock the CSIS node names no domain (§1.4).
+  off. `pd_pdp` stays off. (§1.4 then said stock's CSIS node names no
+  domain; it holds `pd_pdp`, see RC2.0p.)
   `tools/camera-csis-probe` checks that genpd, runtime PM and the clock
   all read on, and only then reads the register once, through a
   read-only `/dev/mem` mapping (raven's root has no `devmem`).
