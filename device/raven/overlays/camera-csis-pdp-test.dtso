@@ -1,0 +1,35 @@
+// SPDX-License-Identifier: MIT
+/*
+ * Bring-up only (CAMERA-PLAN.md, RC2.0q-r): camera-csis-smc-test plus a
+ * second simple-pm-bus that holds pd_pdp, so that tools/camera-csis-probe
+ * (PDP=1) can power PDP on before CSIS and off after it. Stock never runs
+ * CSIS with PDP off: its lwis_csi holds pd_pdp, and the camera's top
+ * device holds both (Google's gs101-isp.dtsi). In RC2.0b-p pd_csis's
+ * power-off stuck (STATUS 0x1) with PDP off. The bus covers PDP's first
+ * page (lwis_pdp@1AA40000); nothing reads it. Replaces
+ * camera-csis-smc-test.
+ */
+/dts-v1/;
+/plugin/;
+
+&pd_csis {
+	google,tzpc-smc = <0x1a410204>;
+};
+
+&{/soc@0} {
+	bus@1a440000 {
+		compatible = "simple-pm-bus";
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges = <0x0 0x1a440000 0x1000>;
+		power-domains = <&pd_csis>;
+	};
+
+	bus@1aa40000 {
+		compatible = "simple-pm-bus";
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges = <0x0 0x1aa40000 0x1000>;
+		power-domains = <&pd_pdp>;
+	};
+};

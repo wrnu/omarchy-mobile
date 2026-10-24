@@ -19,17 +19,23 @@
 # save and restore calls to EL3 (exynos_pm_domains.tzpc_smc) for this one
 # cycle: the restore after the power-on, the save before the power-off. The
 # EXIT trap turns them off again after the power-off.
+# PDP=1 (camera-csis-pdp-test, RC2.0q-r) powers pd_pdp on through the
+# overlay's second bus before pd_csis, as stock never runs CSIS without
+# PDP, and the EXIT trap powers it off after pd_csis.
 set -u
 READ=${READ:-0}
 SMC=${SMC:-0}
+PDP=${PDP:-0}
 PARAM=/sys/module/exynos_pm_domains/parameters/tzpc_smc
 ADDR=0x1a440000
 GENPD=/sys/kernel/debug/pm_genpd/pm_genpd_summary
 CLK=/sys/kernel/debug/clk/clk_summary
 mark() { echo "camera-csis-probe: $*" > /dev/kmsg; echo "== $*"; }
 csis_state() { awk '$1 == "csis" { print $2 }' $GENPD; }
+pdp_state() { awk '$1 == "pdp" { print $2 }' $GENPD; }
 gate() { awk '$1 == "gout_cmu_csis_bus" { print "gout_cmu_csis_bus enable=" $2 " prepare=" $3 " hw=" $9 }' $CLK; }
 show() {
+  [ "$PDP" = 1 ] && echo "genpd pdp: $(pdp_state)"
   echo "genpd csis: $(csis_state)"
   echo "runtime_status: $(cat $dev/power/runtime_status)"
   gate
@@ -49,6 +55,12 @@ off() {
     echo N > $PARAM
     echo "tzpc_smc: $(cat $PARAM)"
   fi
+  if [ -n "${pdev:-}" ]; then
+    mark "powering pd_pdp off: power/control auto"
+    echo auto > $pdev/power/control
+    sleep 0.2
+    echo "genpd pdp: $(pdp_state)"
+  fi
   dmesg | grep -iE 'csis|power domain|simple-pm-bus|abort|SError' | tail -5
 }
 
@@ -61,6 +73,18 @@ done
 [ "$(cat $dev/power/control)" = auto ] || { echo "power/control is not auto: something holds the block on: reboot first"; exit 1; }
 [ "$(csis_state)" = off-0 ] || { echo "genpd csis is $(csis_state), not off-0: reboot first"; exit 1; }
 dmesg | grep -cE 'Power domain csis (enable|disable) failed' >/dev/null && { echo "pd_csis failed to switch on this boot: reboot first"; exit 1; }
+pdev=
+if [ "$PDP" = 1 ]; then
+  for d in /sys/bus/platform/devices/*; do
+    case $(readlink -f $d/of_node 2>/dev/null) in */soc@0/bus@1aa40000) p=$d ;; esac
+  done
+  [ -n "${p:-}" ] || { echo "no bus@1aa40000: camera-csis-pdp-test is not in the running DTB"; exit 1; }
+  [ "$(basename "$(readlink -f $p/driver)")" = simple-pm-bus ] || { echo "${p##*/} has no simple-pm-bus driver: stop"; exit 1; }
+  [ "$(cat $p/power/control)" = auto ] || { echo "the PDP bus's power/control is not auto: reboot first"; exit 1; }
+  [ "$(pdp_state)" = off-0 ] || { echo "genpd pdp is $(pdp_state), not off-0: reboot first"; exit 1; }
+  dmesg | grep -cE 'Power domain pdp (enable|disable) failed' >/dev/null && { echo "pd_pdp failed to switch this boot: reboot first"; exit 1; }
+  echo "pdp bus: ${p##*/}"
+fi
 if [ "$SMC" = 1 ]; then
   pdn=$(find /proc/device-tree/ -name 'power-domain@17462400' | head -1)
   [ -n "$pdn" ] && [ -e "$pdn/google,tzpc-smc" ] || { echo "pd_csis has no google,tzpc-smc: camera-csis-smc-test is not in the running DTB"; exit 1; }
@@ -76,8 +100,15 @@ clocked=1
 echo "bus: ${dev##*/}"
 show
 
-mark "pd_csis on$([ $clocked = 1 ] && echo " and the CSIS bus clock") (runtime PM: power/control on)"
 trap off EXIT
+if [ "$PDP" = 1 ]; then
+  mark "pd_pdp on first (runtime PM: power/control on)"
+  pdev=$p
+  echo on > $pdev/power/control
+  sleep 0.2
+  [ "$(pdp_state)" = on ] || { echo "genpd pdp did not come on: stop"; exit 1; }
+fi
+mark "pd_csis on$([ $clocked = 1 ] && echo " and the CSIS bus clock") (runtime PM: power/control on)"
 if [ "$SMC" = 1 ]; then
   mark "DTZPC calls on (tzpc_smc=Y): restore after this power-on, save before the power-off"
   echo Y > $PARAM

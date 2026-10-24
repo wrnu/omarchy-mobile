@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Pixel 6 Pro (raven): cameras
 
-Status (2026-10-24): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 passes: the ultrawide's module EEPROM answers (§5); RC1.4 passes: the ultrawide's IMX386 answers with model `0x0386` (§5); RC2.0 (power `pd_csis`, read one CSIS register) offline checks pass, RC2.0a passes; RC2.0b stopped at the power-off (the PD driver's 1 ms wait); RC2.0e passes, RC2.0f shows the power-off is stuck, not slow; RC2.0h finds `pd_csis` off at hand-off; RC2.0m passes, RC2.0n shows the power-off sticks without the bus clock too; RC2.0o-p (stock's DTZPC save and restore through EL3) offline checks pass, RC2.0o passes; RC2.0p stops: both DTZPC calls return 0, and the power-off still sticks; stock never powers CSIS without PDP, which is next (§4, §5).** No camera driver binds on
+Status (2026-10-24): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 passes: the ultrawide's module EEPROM answers (§5); RC1.4 passes: the ultrawide's IMX386 answers with model `0x0386` (§5); RC2.0 (power `pd_csis`, read one CSIS register) offline checks pass, RC2.0a passes; RC2.0b stopped at the power-off (the PD driver's 1 ms wait); RC2.0e passes, RC2.0f shows the power-off is stuck, not slow; RC2.0h finds `pd_csis` off at hand-off; RC2.0m passes, RC2.0n shows the power-off sticks without the bus clock too; RC2.0o-p (stock's DTZPC save and restore through EL3) offline checks pass, RC2.0o passes; RC2.0p stops: both DTZPC calls return 0, and the power-off still sticks; stock never powers CSIS without PDP: RC2.0q-r (PDP around the CSIS cycle) offline checks pass, push next (§4, §5).** No camera driver binds on
 raven, so there's no `/dev/video*` or `/dev/media*`, and omacam now says "No camera
 found" after 20 s (omacam `4920def`, local). Kernel branch
 `omamobile-gs101-camera` (from `omamobile-gs101-int` `0422abf64`), worktree
@@ -429,6 +429,25 @@ enabled yet), then runtime-suspend, which powers the sensor down again.
   (the `camera-csis-test` bus plus the property). If it fails without a
   hang, what's left is the time the domain stays on: try a cycle with the
   shortest gap between on and off, to match the working boot cycle.
+
+  RC2.0p failed with both calls returning 0 (§5). Stock never runs CSIS
+  with PDP off (§1.4: `lwis_csi` holds `pd_pdp`; the top device holds both),
+  and CSIS's OTF, VO and AXI bridges have PDP as their partner, so RC2.0q-r
+  power PDP around the CSIS cycle. No kernel change (`g6d15de5fd`).
+  `camera-csis-pdp-test` is `camera-csis-smc-test` plus a second
+  simple-pm-bus (`bus@1aa40000`, PDP's first page, never read) that holds
+  `pd_pdp`. `camera-csis-probe PDP=1` powers PDP on, then CSIS on, then
+  CSIS off, then PDP off. One change: the DTZPC calls stay off (`SMC=0`).
+
+  | Step | Command | Expect / Pass | Stop if | Rollback | Risk |
+  | --- | --- | --- | --- | --- | --- |
+  | RC2.0q | `images` with `camera-csis-pdp-test`, **push (human's go)**; then `tools/phone-ssh 'grep -E "^(csis\|pdp\|ipp) " -A2 /sys/kernel/debug/pm_genpd/pm_genpd_summary; dmesg \| grep -E "Power domain"'` | boots; `csis` and `pdp` `off-0`, each bus `suspended` under its domain; no "failed" | no boot; a failure at boot (record the status word) | push with `camera-csis-smc-test` | low |
+  | RC2.0r | `tools/camera-stage --watchdog x --cmd 'PDP=1 READ=0 bash -s' --script tools/camera-csis-probe` | `pdp on`, then `csis on`, `active`; after `auto`: **`csis off-0`**, no failure; then `pdp off-0` | "csis disable failed": PDP isn't the difference; "pdp disable failed": record both status words; any abort; stop | the EXIT trap; a reboot | low: power only, two domains |
+
+  If RC2.0r passes, the CSIS read comes back with PDP held (the clock bus
+  plus the PDP bus). If CSIS still sticks with PDP on, the next single
+  change is stock's whole order: PDP on and the DTZPC calls together
+  (`PDP=1 SMC=1`).
 
   If RC2.0c aborts, the next test is another overlay, used instead of
   `camera-csis-test` (one boot). It sets `&pd_csis` `status = "disabled"`,
@@ -910,3 +929,13 @@ failure, no abort or SError.
   power-off that worked (RC2.0o), if PDP was still on when genpd turned
   CSIS off as unused [I, unchecked].
 - The domain is stuck mid-power-off on this boot: no read.
+
+### RC2.0q-r offline checks (2026-10-24, kernel `6d15de5fd`): pass
+
+`camera-csis-pdp-test` applies in place of `camera-csis-smc-test`:
+`bus@1aa40000` holds phandle `0xa2`, `power-domain@17462480` (`pdp`,
+`okay`). `dt-validate` gives 932 lines, as RC2.0o (no new warning).
+`camera-csis-probe PDP=1` refuses to run without the PDP bus, with
+`pdp` not `off-0`, or after a `pdp` failure this boot; the EXIT trap
+powers CSIS off before PDP. `bash -n` clean, shellcheck as before.
+Images built (`logs/images-raven-camera-12.log`).
