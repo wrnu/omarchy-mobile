@@ -672,3 +672,25 @@ SError in the boot log, so the boot-time attach and power-off went through.
 taint 0. `csis off-0`, `pdp off-0`, the bus `suspended`. No "Power domain
 … failed" for any domain, no abort or SError. The AoC came up as usual
 (sound card, `wlp1s0`, `usb0` present).
+
+### RC2.0f on the phone (2026-10-24, `7.3.0-rc6-omamobile-push1-gb7be5bb94247`): stop, the power-off is stuck
+
+`logs/camera-20261024-004159-x.log` (kmsg streamed, watchdog armed).
+
+- Power-on as in RC2.0b (`csis on`, `active`, clock `enable=1 hw=Y`).
+- Power-off: **"Power domain csis disable failed (status 0x1)"** after the
+  full 10 ms. STATUS bit 0 is still 1: the domain is stuck, not slow, so
+  the timeout was not the cause. CONFIGURATION is 0, so the request is
+  pending. No abort, taint 0, `running`. No read on this boot.
+- **The likely cause** [I]: after `csis_on`, stock restores CMU_CSIS's saved
+  registers. These are about 40 `QCH_CON_*` (the Q-channels of the
+  SysMMUs, SSMTs, QEs, PPMUs, the eight link wrappers and the sysreg),
+  plus `DIV_CLK_CSIS_BUSP` and `PLL_CON0_MUX_CLKCMU_CSIS_BUS_USER`
+  (`flexpmu_cal_local_gs101.h:927-…`). The PMU's power-down asks these
+  Q-channels to quiesce. At reset values they may never answer, so the
+  power-off hangs. The boot-time power-off works because it starts from
+  ABL's configured CMU_CSIS.
+- Stock saves these values at each power-off, from the running CMU. We
+  never have them, because genpd powers the domain off at boot without a
+  save. So the next step is to read what ABL leaves in CMU_CSIS, while
+  the domain is still in ABL's state.
