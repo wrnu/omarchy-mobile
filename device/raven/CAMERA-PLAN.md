@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Pixel 6 Pro (raven): cameras
 
-Status (2026-10-24): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 passes: the ultrawide's module EEPROM answers (§5); RC1.4 passes: the ultrawide's IMX386 answers with model `0x0386` (§5); RC2.0 (power `pd_csis`, read one CSIS register) offline checks pass, RC2.0a passes; RC2.0b stopped at the power-off (the PD driver's 1 ms wait); RC2.0e passes, RC2.0f shows the power-off is stuck, not slow; RC2.0h-l (read CSIS and CMU_CSIS in ABL's state) next (§4, §5).** No camera driver binds on
+Status (2026-10-24): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 passes: the ultrawide's module EEPROM answers (§5); RC1.4 passes: the ultrawide's IMX386 answers with model `0x0386` (§5); RC2.0 (power `pd_csis`, read one CSIS register) offline checks pass, RC2.0a passes; RC2.0b stopped at the power-off (the PD driver's 1 ms wait); RC2.0e passes, RC2.0f shows the power-off is stuck, not slow; RC2.0h finds `pd_csis` off at hand-off; RC2.0m-n (power-cycle without the bus clock) next (§4, §5).** No camera driver binds on
 raven, so there's no `/dev/video*` or `/dev/media*`, and omacam now says "No camera
 found" after 20 s (omacam `4920def`, local). Kernel branch
 `omamobile-gs101-camera` (from `omamobile-gs101-int` `0422abf64`), worktree
@@ -382,6 +382,24 @@ enabled yet), then runtime-suspend, which powers the sensor down again.
   | RC2.0k | as RC2.0i with `READ=cmu` | 56 values, recorded in §5 (ABL's configuration; not unique to the phone) | as RC2.0i | as RC2.0i | low |
   | RC2.0l | `tools/phone-smoke` | as before | a regression | reboot | none |
 
+  RC2.0h found `pd_csis` off at hand-off (§5), so there is no ABL state
+  to read. RC2.0m-n test the remaining suspect we control: simple-pm-bus
+  gates the CSIS bus clock just before genpd's power-off.
+  `camera-csis-pd-test` (replacing `camera-csis-abl-test`, default
+  bootargs) is `camera-csis-test` without `clocks`. The probe sees the
+  missing clock, never touches the clock, and refuses `READ=1`.
+
+  | Step | Command | Expect / Pass | Stop if | Rollback | Risk |
+  | --- | --- | --- | --- | --- | --- |
+  | RC2.0m | `images` with `camera-csis-pd-test` (same kernel `gb7be5bb94`), **push (human's go)**; then the genpd summary and `dmesg` for "Power domain" | boots; `csis off-0`, the bus `suspended` under `csis`; no "Power domain … failed" (genpd's attach at boot powers on and off) | no boot; a failure at boot (record the status word: then the attach cycle sticks even without the clock) | push with `camera-csis-test` | low |
+  | RC2.0n | `tools/camera-stage --watchdog x --cmd 'READ=0 bash -s' --script tools/camera-csis-probe` | `csis on`, `active`; after `auto`: **`csis off-0`**, no failure; the clock untouched (`enable=0`) | "disable failed (status 0x…)": the clock wasn't the cause; record, stop | the EXIT trap; a reboot | low: power only |
+
+  If RC2.0n passes, the CSIS driver must keep its bus clock until the
+  domain is off. Whether the block can be read without that clock (CMU_CSIS's
+  user mux at reset may select the oscillator [I]) is a separate step. If
+  it fails, the DTZPC save SMC before the power-off is the remaining
+  difference from stock.
+
   If RC2.0c aborts, the next test is another overlay, used instead of
   `camera-csis-test` (one boot). It sets `&pd_csis` `status = "disabled"`,
   so genpd never cycles the domain and ABL's state stays. Its bus holds only
@@ -757,3 +775,12 @@ failure.
 - **Next, one change:** the genpd power cycle without the clock: a bus
   with `pd_csis` only, no `clocks`, and no read. If the power-off then
   completes, gating the bus clock before the power-off is what sticks.
+
+### RC2.0m offline checks (2026-10-24, `7.3.0-rc6-omamobile-push1-gb7be5bb94247`): pass
+
+`camera-csis-pd-test` applies in place of `camera-csis-abl-test`: the bus
+holds `pd_csis` only, and the bootargs are the DT's own. dtc gives no
+warnings; `dt-validate` gives 928 lines (the baseline). `camera-csis-probe`
+skips the clock and refuses `READ=1` when the bus has no `clocks`;
+`bash -n` clean. Images built.
+

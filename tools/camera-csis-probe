@@ -13,6 +13,8 @@
 # touched. READ=1 also reads 0x1a440000 once, through a read-only /dev/mem
 # mapping (the mapping can't write), and only if every check passed. The
 # EXIT trap returns the bus to runtime PM's "auto", which powers it off.
+# With camera-csis-pd-test the bus holds no clock: the clock check is
+# skipped, the clock is never touched, and READ=1 is refused.
 set -u
 READ=${READ:-0}
 ADDR=0x1a440000
@@ -43,10 +45,14 @@ done
 [ "$(basename "$(readlink -f $dev/driver)")" = simple-pm-bus ] || { echo "${dev##*/} has no simple-pm-bus driver: stop"; exit 1; }
 [ "$(cat $dev/power/control)" = auto ] || { echo "power/control is not auto: something holds the block on: reboot first"; exit 1; }
 [ "$(csis_state)" = off-0 ] || { echo "genpd csis is $(csis_state), not off-0: reboot first"; exit 1; }
+dmesg | grep -c 'Power domain csis' >/dev/null && { echo "pd_csis failed to switch on this boot: reboot first"; exit 1; }
+clocked=1
+[ -e $dev/of_node/clocks ] || clocked=0
+[ $clocked = 0 ] && [ "$READ" = 1 ] && { echo "the bus holds no clock (camera-csis-pd-test): no read"; exit 1; }
 echo "bus: ${dev##*/}"
 show
 
-mark "pd_csis on and the CSIS bus clock (runtime PM: power/control on)"
+mark "pd_csis on$([ $clocked = 1 ] && echo " and the CSIS bus clock") (runtime PM: power/control on)"
 trap off EXIT
 echo on > $dev/power/control; echo "control-exit=$?"
 sleep 0.2
@@ -54,7 +60,7 @@ show
 ok=1
 [ "$(csis_state)" = on ] || { echo "genpd csis did not come on: stop"; ok=0; }
 [ "$(cat $dev/power/runtime_status)" = active ] || { echo "the bus is not active: stop"; ok=0; }
-gate | grep -cE 'enable=[1-9].*hw=Y' >/dev/null || { echo "gout_cmu_csis_bus is not on: stop"; ok=0; }
+[ $clocked = 0 ] || gate | grep -cE 'enable=[1-9].*hw=Y' >/dev/null || { echo "gout_cmu_csis_bus is not on: stop"; ok=0; }
 dmesg | grep -iE 'power domain csis' | tail -2
 
 if [ "$READ" = 1 ] && [ $ok = 1 ]; then
