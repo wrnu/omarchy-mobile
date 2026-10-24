@@ -1,0 +1,159 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT
+#
+# camera-csis-tzpc-probe: stock's order around raven's pd_csis, attended
+# (device/raven/CAMERA-PLAN.md, RC2.0zc-ze), on the phone, with the
+# camera-csis-tzpc-test overlay. Google's CAL saves D_TZPC_CSIS through
+# EL3 before its first power-off, from the bootloader's state, and
+# restores it after every power-on. Run it under the laptop's log stream
+# and the watchdog:
+#
+#   tools/camera-stage --watchdog x --cmd 'READ=none bash -s' --script tools/camera-csis-tzpc-probe
+#
+# First run (the domain kept on as the bootloader left it): turn the PD
+# driver's DTZPC calls on (tzpc_smc), release the kept domain (its first
+# power-off, after the save), power it on again through the bus (the
+# restore after the power-on) and, with READ=cmu1, read one CMU_CSIS
+# register. The bus stays on and tzpc_smc stays on.
+#
+# HELD=1 (after a first run): READ=cmu reads the 56 registers stock saves,
+# then the bus goes back to "auto", so genpd powers the domain off with the
+# save before it: the power-off that stuck in RC2.0b-r. tzpc_smc is turned
+# off at the end.
+#
+# Each register is one 32-bit load through a read-only /dev/mem mapping.
+set -u
+READ=${READ:-none}
+HELD=${HELD:-0}
+P=/sys/module/exynos_pm_domains/parameters
+GENPD=/sys/kernel/debug/pm_genpd/pm_genpd_summary
+CLK=/sys/kernel/debug/clk/clk_summary
+mark() { echo "camera-csis-tzpc-probe: $*" > /dev/kmsg; echo "== $*"; }
+csis_state() { awk '$1 == "csis" { print $2 }' $GENPD; }
+gate() { awk '$1 == "gout_cmu_csis_bus" { print "gout_cmu_csis_bus enable=" $2 " prepare=" $3 " hw=" $9 }' $CLK; }
+show() {
+  echo "genpd csis: $(csis_state)"
+  echo "runtime_status: $(cat $dev/power/runtime_status)"
+  echo "tzpc_smc: $(cat $P/tzpc_smc)"
+  gate
+}
+pdlog() { dmesg | grep -E 'Power domain csis|17462400.power-domain|released' | tail -"${1:-4}"; }
+# wait up to 2 s for genpd's csis state to read $1
+wait_state() {
+  for _ in $(seq 20); do
+    [ "$(csis_state)" = "$1" ] && return 0
+    dmesg | grep -cE 'Power domain csis (enable|disable) failed' >/dev/null && return 1
+    sleep 0.1
+  done
+  return 1
+}
+smc_off() { echo N > $P/tzpc_smc; echo "tzpc_smc: $(cat $P/tzpc_smc)"; }
+done_msg() { dmesg | grep -iE 'abort|SError' | tail -3; }
+
+case $READ in none|cmu1|cmu) ;; *) echo "READ is none, cmu1 or cmu"; exit 1 ;; esac
+[ "$HELD" = 1 ] && [ "$READ" = cmu1 ] && { echo "HELD=1 reads READ=cmu or none"; exit 1; }
+[ "$HELD" = 0 ] && [ "$READ" = cmu ] && { echo "the first run reads READ=cmu1 at most"; exit 1; }
+
+dev=
+for d in /sys/bus/platform/devices/*; do
+  case $(readlink -f $d/of_node 2>/dev/null) in */soc@0/bus@1a440000) dev=$d ;; esac
+done
+[ -n "$dev" ] || { echo "no bus@1a440000: camera-csis-tzpc-test is not in the running DTB"; exit 1; }
+[ "$(basename "$(readlink -f $dev/driver)")" = simple-pm-bus ] || { echo "${dev##*/} has no simple-pm-bus driver: stop"; exit 1; }
+[ -e $dev/of_node/clocks ] && [ -e $dev/of_node/power-domains ] || { echo "the bus needs pd_csis and the clock (camera-csis-tzpc-test): stop"; exit 1; }
+pdn=$(find /proc/device-tree/ -name 'power-domain@17462400' | head -1)
+[ -n "$pdn" ] && [ -e "$pdn/google,keep-boot-on" ] && [ -e "$pdn/google,tzpc-smc" ] || { echo "pd_csis lacks google,keep-boot-on or google,tzpc-smc: stop"; exit 1; }
+[ -w $P/tzpc_smc ] && [ -w $P/release_kept ] || { echo "this kernel has no tzpc_smc or release_kept: stop"; exit 1; }
+dmesg | grep -cE 'Power domain csis (enable|disable) failed' >/dev/null && { echo "pd_csis failed to switch this boot: reboot first"; exit 1; }
+echo "bus: ${dev##*/}"
+
+if [ "$HELD" = 0 ]; then
+  dmesg | grep -c '17462400.power-domain: left as the bootloader left it' >/dev/null || { echo "pd_csis wasn't kept on at boot: stop"; exit 1; }
+  dmesg | grep -c 'released (release_kept)' >/dev/null && { echo "already released this boot: reboot first"; exit 1; }
+  dmesg | grep -cE 'Power domain csis: DTZPC .* smc returned' >/dev/null && { echo "a DTZPC call already ran this boot: reboot first"; exit 1; }
+  [ "$(cat $dev/power/control)" = auto ] || { echo "power/control is not auto: reboot first"; exit 1; }
+  [ "$(csis_state)" = on ] || { echo "genpd csis is $(csis_state), not on (kept): stop"; exit 1; }
+  [ "$(cat $P/tzpc_smc)" = N ] || { echo "tzpc_smc is already on: reboot first"; exit 1; }
+  show
+
+  # Any stop from here on leaves the calls off; a stuck domain needs a reboot.
+  trap 'smc_off; done_msg' EXIT
+  mark "DTZPC calls on (tzpc_smc=Y); releasing the kept pd_csis: the save, then its first power-off, from the bootloader's state"
+  echo Y > $P/tzpc_smc
+  echo 1 > $P/release_kept
+  if ! wait_state off-0; then
+    pdlog 5; show
+    echo "pd_csis did not power off from the bootloader's state: stop"
+    exit 1
+  fi
+  pdlog 4
+  dmesg | grep -c 'Power domain csis: DTZPC save 0x1a410204: smc returned 0x0' >/dev/null || { echo "no clean DTZPC save: stop"; exit 1; }
+
+  mark "pd_csis on and the CSIS bus clock (power/control on): the restore after the power-on"
+  echo on > $dev/power/control
+  sleep 0.2
+  show
+  pdlog 3
+  [ "$(csis_state)" = on ] || { echo "genpd csis did not come on: stop"; exit 1; }
+  [ "$(cat $dev/power/runtime_status)" = active ] || { echo "the bus is not active: stop"; exit 1; }
+  gate | grep -cE 'enable=[1-9].*hw=Y' >/dev/null || { echo "gout_cmu_csis_bus is not on: stop"; exit 1; }
+  dmesg | grep -c 'Power domain csis: DTZPC restore 0x1a410204: smc returned 0x0' >/dev/null || { echo "no clean DTZPC restore: stop, no read"; exit 1; }
+else
+  [ "$(cat $dev/power/control)" = on ] || { echo "HELD=1, but power/control is not on: run the first run first"; exit 1; }
+  [ "$(csis_state)" = on ] || { echo "HELD=1, but genpd csis is $(csis_state): stop"; exit 1; }
+  [ "$(cat $P/tzpc_smc)" = Y ] || { echo "HELD=1, but tzpc_smc is off: stop"; exit 1; }
+  dmesg | grep -c 'Power domain csis: DTZPC restore 0x1a410204: smc returned 0x0' >/dev/null || { echo "no clean DTZPC restore this boot: stop"; exit 1; }
+  show
+  trap 'smc_off; done_msg' EXIT
+fi
+
+if [ "$READ" != none ]; then
+  mark "READ=$READ: CMU_CSIS after the restore, one 32-bit load each"
+  python3 - "$READ" <<'EOF'
+import ctypes, os, sys
+# The registers Google's CAL saves (csis_save), as camera-csis-abl-probe:
+# the user mux, the controller option, the BUSP divider, the 51 QCH_CONs,
+# then SYSREG_CSIS's DRCG_EN and MEMCLK.
+regs = [0x1a400600, 0x1a400800, 0x1a401800]
+regs += list(range(0x1a403048, 0x1a403114, 4))
+regs += [0x1a420104, 0x1a420108]
+assert len(regs) == 56
+if sys.argv[1] == "cmu1":
+    regs = regs[:1]
+page = os.sysconf("SC_PAGE_SIZE")
+fd = os.open("/dev/mem", os.O_RDONLY | os.O_SYNC)
+libc = ctypes.CDLL(None, use_errno=True)
+libc.mmap.restype = ctypes.c_void_p
+libc.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int,
+                      ctypes.c_int, ctypes.c_int, ctypes.c_long]
+PROT_READ, MAP_SHARED = 1, 1
+maps = {}
+for addr in regs:
+    base = addr & ~(page - 1)
+    if base not in maps:
+        m = libc.mmap(None, page, PROT_READ, MAP_SHARED, fd, base)
+        if m is None or m == ctypes.c_void_p(-1).value:
+            sys.exit("mmap: " + os.strerror(ctypes.get_errno()))
+        maps[base] = m
+    val = ctypes.c_uint32.from_address(maps[base] + (addr - base)).value
+    print(f"0x{addr:08x} = 0x{val:08x}", flush=True)
+EOF
+  echo "read-exit=$?"
+fi
+
+if [ "$HELD" = 0 ]; then
+  # Leave the block on and the calls on for the HELD=1 run.
+  trap - EXIT
+  mark "the bus stays on, tzpc_smc stays on, for the HELD=1 run"
+  show
+else
+  mark "power/control auto: the save, then the power-off that stuck in RC2.0b-r"
+  echo auto > $dev/power/control
+  if wait_state off-0; then
+    echo "pd_csis powered off"
+  else
+    echo "pd_csis did not power off"
+  fi
+  show
+  pdlog 4
+fi

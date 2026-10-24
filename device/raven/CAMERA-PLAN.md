@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Pixel 6 Pro (raven): cameras
 
-Status (2026-10-24): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 passes: the ultrawide's module EEPROM answers (§5); RC1.4 passes: the ultrawide's IMX386 answers with model `0x0386` (§5); RC2.0 (power `pd_csis`, read one CSIS register) offline checks pass, RC2.0a passes; RC2.0b stopped at the power-off (the PD driver's 1 ms wait); RC2.0e passes, RC2.0f shows the power-off is stuck, not slow; RC2.0h finds `pd_csis` off at hand-off; RC2.0m passes, RC2.0n shows the power-off sticks without the bus clock too; RC2.0o-p (stock's DTZPC save and restore through EL3) offline checks pass, RC2.0o passes; RC2.0p stops: both DTZPC calls return 0, and the power-off still sticks; stock never powers CSIS without PDP: RC2.0q-r (PDP around the CSIS cycle) offline checks pass, RC2.0q passes; RC2.0r stops: PDP's power-off sticks too, so every power-off after our own power-on sticks; our PD driver wrote the whole CONFIGURATION register where stock changes only bit 0: RC2.0s-t (bit 0 only, plus logging) offline checks pass; RC2.0s shows CONFIGURATION holds only bit 0, so that wasn't it; stock restores the CMU state it saved from the bootloader's on state after every power-on, which we never do; RC2.0u-x (read that state) offline checks pass; RC2.0u stops: genpd's sync_state powers boot-on domains off despite `pd_ignore_unused` (so RC2.0h's "off at hand-off" was wrong); RC2.0y (a bring-up sync_state that keeps `pd_csis` on) passes; RC2.0v-x pass: the bootloader leaves every CSIS Q-channel disabled with its clock request forced (`QCH_CON` `0x003f0002`), the user mux on CMU_TOP; next, the same registers after our own power-on: RC2.0z passes; RC2.0za hangs the SoC: CMU_CSIS, readable in the bootloader's state, hangs after our own power-on; the DTZPC was never saved from the bootloader's state, so its restore had nothing to put back [I] (§4, §5).** No camera driver binds on
+Status (2026-10-24): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 passes: the ultrawide's module EEPROM answers (§5); RC1.4 passes: the ultrawide's IMX386 answers with model `0x0386` (§5); RC2.0 (power `pd_csis`, read one CSIS register) offline checks pass, RC2.0a passes; RC2.0b stopped at the power-off (the PD driver's 1 ms wait); RC2.0e passes, RC2.0f shows the power-off is stuck, not slow; RC2.0h finds `pd_csis` off at hand-off; RC2.0m passes, RC2.0n shows the power-off sticks without the bus clock too; RC2.0o-p (stock's DTZPC save and restore through EL3) offline checks pass, RC2.0o passes; RC2.0p stops: both DTZPC calls return 0, and the power-off still sticks; stock never powers CSIS without PDP: RC2.0q-r (PDP around the CSIS cycle) offline checks pass, RC2.0q passes; RC2.0r stops: PDP's power-off sticks too, so every power-off after our own power-on sticks; our PD driver wrote the whole CONFIGURATION register where stock changes only bit 0: RC2.0s-t (bit 0 only, plus logging) offline checks pass; RC2.0s shows CONFIGURATION holds only bit 0, so that wasn't it; stock restores the CMU state it saved from the bootloader's on state after every power-on, which we never do; RC2.0u-x (read that state) offline checks pass; RC2.0u stops: genpd's sync_state powers boot-on domains off despite `pd_ignore_unused` (so RC2.0h's "off at hand-off" was wrong); RC2.0y (a bring-up sync_state that keeps `pd_csis` on) passes; RC2.0v-x pass: the bootloader leaves every CSIS Q-channel disabled with its clock request forced (`QCH_CON` `0x003f0002`), the user mux on CMU_TOP; next, the same registers after our own power-on: RC2.0z passes; RC2.0za hangs the SoC: CMU_CSIS, readable in the bootloader's state, hangs after our own power-on; the DTZPC was never saved from the bootloader's state, so its restore had nothing to put back [I]; RC2.0zc-ze (stock's save-then-restore order, attended) offline checks pass, push next (§4, §5).** No camera driver binds on
 raven, so there's no `/dev/video*` or `/dev/media*`, and omacam now says "No camera
 found" after 20 s (omacam `4920def`, local). Kernel branch
 `omamobile-gs101-camera` (from `omamobile-gs101-int` `0422abf64`), worktree
@@ -519,6 +519,25 @@ enabled yet), then runtime-suspend, which powers the sensor down again.
 
   The differences are what a restore after power-on must write. If the
   reset `QCH_CON` has `ENABLE` 1, that is the lead for the stuck power-off.
+
+  RC2.0za hung the SoC (§5): after our own power-on CMU_CSIS isn't
+  reachable. **Never read the CSIS block after a power-on that had no
+  DTZPC restore from a real save.** RC2.0zc-ze do stock's order, attended.
+  Kernel `90a130fd6` remembers the domains `google,keep-boot-on` kept and
+  adds a `release_kept` parameter that runs genpd's `sync_state` power-off
+  for them on demand. `camera-csis-tzpc-test` sets `google,keep-boot-on` and
+  `google,tzpc-smc` on `pd_csis`, with the `camera-csis-test` bus (domain
+  and clock). `tools/camera-csis-tzpc-probe` (first run) turns
+  `tzpc_smc` on, releases the domain (the save, then its first power-off,
+  from the bootloader's state), powers it on (the restore), and reads one
+  register only after a clean save and restore; `HELD=1` reads all 56,
+  then makes the power-off with the save.
+
+  | Step | Command | Expect / Pass | Stop if | Rollback | Risk |
+  | --- | --- | --- | --- | --- | --- |
+  | RC2.0zc | `images` (kernel `g90a130fd6`, `camera-csis-tzpc-test`), **push (human's go)**; then `tools/phone-ssh 'dmesg \| grep -E "Power domain csis\|17462400.power-domain"; grep -E "^csis" -A2 /sys/kernel/debug/pm_genpd/pm_genpd_summary; cat /sys/module/exynos_pm_domains/parameters/tzpc_smc'` | boots; "csis … at probe"; "left as the bootloader left it"; `csis on` with the bus `suspended`; `N`; no "smc returned", no "csis off" | no boot; `csis off-0`; any DTZPC call at boot | push with `camera-csis-test` (kernel `g2572f3c60`) | low |
+  | RC2.0zd | `tools/camera-stage --watchdog x --cmd 'READ=cmu1 bash -s' --script tools/camera-csis-tzpc-probe` | "released (release_kept)"; "DTZPC save 0x1a410204: smc returned 0x0"; `csis off-0` (the power-off from the bootloader's state); then "csis on", "DTZPC restore … returned 0x0", `active`, the clock on; **"0x1a400600 = 0x…"** (RC2.0w read `0x10`); the bus stays on | a hang (the restore didn't make the block reachable, or EL3 hung); a non-zero return; the release power-off fails: record, stop | a reboot (pstore after a reset) | medium: the first read after a restore; the first save from the bootloader's state |
+  | RC2.0ze | `tools/camera-stage --watchdog x --cmd 'READ=cmu HELD=1 bash -s' --script tools/camera-csis-tzpc-probe` | 56 values (compare with RC2.0x); then "DTZPC save … 0x0" and **"pd_csis powered off"** (`csis off-0`) | a hang; "disable failed (status 0x…)" (record: the save and restore don't fix the power-off) | a reboot | low after RC2.0zd |
 
   If RC2.0c aborts, the next test is another overlay, used instead of
   `camera-csis-test` (one boot). It sets `&pd_csis` `status = "disabled"`,
@@ -1237,3 +1256,17 @@ bootloader left it". `csis off-0`, `soc@0:bus@1a440000` `suspended` under it.
 - Next: let the save run at the boot-time power-off, from the bootloader's
   state (RC2.0p showed the save with the block on returns 0), then power
   on with the restore and read one register.
+
+### RC2.0zc-ze offline checks (2026-10-24, kernel `90a130fd6`): pass
+
+checkpatch `--strict` clean; the driver builds with `W=1` (Android clang)
+with no warnings; the kernel build gives only the two usual config
+overrides. `release_kept` calls the exported `of_genpd_sync_state()`, which
+takes the genpd lock, clears `stay_on` and powers off only if no device
+is active (the bus is suspended). `camera-csis-tzpc-test` applies in
+place of `camera-csis-test`: the bus holds `pd_csis` (`0x178`) and clock
+95; `dt-validate` gives 932 lines, the four new ones being the two
+unbound bring-up properties on `power-domain@17462400`.
+`tools/camera-csis-tzpc-probe`: `bash -n` and shellcheck clean; it reads
+nothing without a clean save and a clean restore this boot, and turns
+`tzpc_smc` off on any stop. Images built (`logs/images-raven-camera-17.log`).

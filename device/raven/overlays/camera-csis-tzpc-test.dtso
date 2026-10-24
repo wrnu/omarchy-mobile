@@ -1,0 +1,35 @@
+// SPDX-License-Identifier: MIT
+/*
+ * Bring-up only (CAMERA-PLAN.md, RC2.0zc-ze): stock's order around
+ * pd_csis, attended. Google's CAL saves D_TZPC_CSIS through EL3 before its
+ * first power-off, from the bootloader's state, and restores it after
+ * every power-on. In RC2.0za CMU_CSIS hung the SoC after our own power-on,
+ * with no save ever made.
+ *
+ * - google,keep-boot-on: the PD driver leaves pd_csis on past sync_state,
+ *   until tools/camera-csis-probe (TZPC=1) writes release_kept with
+ *   tzpc_smc set, so that first power-off makes the save.
+ * - google,tzpc-smc: D_TZPC_CSIS's need_smc address (stock's
+ *   gs101-pm-domains.dtsi).
+ * - The camera-csis-test bus: pd_csis and CMU_TOP's CSIS bus clock
+ *   (clock 95, CLK_DOUT_CMU_CSIS_BUS), for the power-on and the read.
+ * Replaces camera-csis-test.
+ */
+/dts-v1/;
+/plugin/;
+
+&pd_csis {
+	google,keep-boot-on;
+	google,tzpc-smc = <0x1a410204>;
+};
+
+&{/soc@0} {
+	bus@1a440000 {
+		compatible = "simple-pm-bus";
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges = <0x0 0x1a440000 0x1000>;
+		power-domains = <&pd_csis>;
+		clocks = <&cmu_top 95>;
+	};
+};
