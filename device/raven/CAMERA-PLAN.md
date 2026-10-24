@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Pixel 6 Pro (raven): cameras
 
-Status (2026-10-23): **RC0 done (read-only, §5); RC1.1 built and gated, not run.** No camera driver binds on
+Status (2026-10-23): **RC0 done (read-only, §5); RC1.1 built and checked offline, not run on the phone.** No camera driver binds on
 raven, so there's no `/dev/video*` or `/dev/media*`, and omacam now says "No camera
 found" after 20 s (omacam `4920def`, local). Kernel branch
 `omamobile-gs101-camera` (from `omamobile-gs101-int` `0422abf64`), worktree
@@ -242,3 +242,17 @@ RC4: IMX586 and IMX663 drivers. RC5: focus (`ak7377`, `sem1215sa`), OIS last.
   and no S2MPG GPIO chip is registered. `slg51002-regulator.ko` and
   `leds-lm3644.ko` are in the module tree; there's no `slg51000` module (not
   in the config).
+
+### RC1.1 offline checks (2026-10-23, `7.3.0-rc6-omamobile-push1-g23f2d45a3298`): pass
+
+- `out-raven-camera` built from `omamobile-gs101-camera` `23f2d45a3`:
+  exit 0; `gpio-s2mpg11.ko` and `slg51000-regulator.ko` built. The only
+  compiler warnings are the two existing `-Wformat` ones in `aoc_alsa_compr.c`.
+- `checkpatch --strict`: 0 errors, 0 warnings on all three commits.
+- `W=1` on `gpio-s2mpg11.o`: no warnings.
+- `dt_binding_check DT_SCHEMA_FILES=samsung,s2mpg11-pmic.yaml`: the example validates.
+- `CHECK_DTBS=y` on `gs101-raven.dtb` and `gs101-oriole.dtb`: nothing on
+  `pmic-2` or its `gpio` node; the findings that remain (Trusty, `soc_id`)
+  were there before.
+- `camera-gpio-test` applies to the new `gs101-raven.dtb` with `fdtoverlay`:
+  the node goes from `disabled` to `okay`.
