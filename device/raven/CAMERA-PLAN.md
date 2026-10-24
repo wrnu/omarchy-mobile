@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Pixel 6 Pro (raven): cameras
 
-Status (2026-10-23): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 (ultrawide EEPROM) next.** No camera driver binds on
+Status (2026-10-23): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 (ultrawide EEPROM) built and checked offline, waiting for the push.** No camera driver binds on
 raven, so there's no `/dev/video*` or `/dev/media*`, and omacam now says "No camera
 found" after 20 s (omacam `4920def`, local). Kernel branch
 `omamobile-gs101-camera` (from `omamobile-gs101-int` `0422abf64`), worktree
@@ -219,8 +219,43 @@ DT ranges to judge the read voltages by (Google's
 
 Record each `cam_ldoN` voltage here: RC1.3 and RC1.4 set them against
 these defaults.
-- **RC1.3** LDO1 only, 1 ms; `hsi2c_3` enabled; read the ultrawide EEPROM
-  `0x50` (first 32 bytes, never written, dump kept off-repo). Stop on NACK.
+**RC1.3: the ultrawide's module EEPROM, read-only.** Needs kernel
+`b9aba3226` or later: `usi3` in I2C mode, `hsi2c_3` at 400 kHz with stock's
+SoC pull-ups on gpp6-0/1, still disabled, and labels `cam_ldo1-7` on the
+SLG51000's LDOs. The `camera-eeprom-test` overlay enables the bus and adds a
+`regulator-output` node on `cam_ldo1` (`CONFIG_REGULATOR_USERSPACE_CONSUMER=m`,
+blacklisted), the sysfs switch for LDO1. Nothing on the bus is described,
+so no driver talks to it.
+
+Stock powers this EEPROM with LDO1 alone, 1 ms (`gs101-raven-camera.dtsi`,
+`eeprom-m24c64x-imx386`, `lwis,read-only`), and its PMIC driver raises `pu`
+(S2MPG11 GPIO 4) after chip select and the PMIC's setup, 1 ms, and keeps it
+high while the PMIC is on (`G/drivers/mfd/slg51000-core.c:333-336, 695-709`).
+What `pu` feeds isn't known (the camera buses' pull-ups is a guess [I]), so
+`tools/camera-eeprom-probe` follows stock: bb, buck, chip select, `pu`,
+then LDO1. Stock runs the SLG51000 in control-register mode, where its
+`set_voltage_sel` does nothing, so stock's LDO1 is the 3.05 V default that
+RC1.2 read; ours is too (no constraints). Stock leaves the bus pins as
+plain inputs while the camera is off; ours stay in I2C function with the
+pull-ups on while the overlay is in the DTB (cheetah does the same, CAM2.3).
+
+The read: one byte at the current address (no address written), then 32
+bytes from offset 0 as one transfer (two address bytes, a repeated start,
+the read; no stop condition between them, so the EEPROM can't start a write
+cycle). The bytes are factory calibration: they stay on the phone in
+`/run/camera-eeprom-uw.bin` and then `~/android/reference/raven-camera/`,
+never in a log or the repo. The tool prints only a summary.
+
+| Step | Command | Expect / Pass | Stop if | Rollback | Risk |
+| --- | --- | --- | --- | --- | --- |
+| RC1.3a | `tools/phone-ssh 'echo "blacklist userspace_consumer" >> /etc/modprobe.d/omamobile-camera-bringup.conf'` | both lines in the file | | remove the line | none |
+| RC1.3b | build `out-raven-camera`, `images` with `camera-eeprom-test`, **push (human's go)** | boots, `uname -r` has `gb9aba3226`; `hsi2c_3` probed as an `i2c-N` with nothing on it; `slg51000_regulator` and `userspace_consumer` not loaded; `98-9e` as in RC1.1 | no boot; either module loaded by itself; I2C errors on the new bus | push `out-raven-aclang` (the RC1.2 build is overwritten by this one) | medium: new kernel |
+| RC1.3c | copy `tools/camera-pmic-gpio` to `/run`, then `tools/camera-stage --watchdog x --cmd 'READ=0 bash -s' --script tools/camera-eeprom-probe` | `99: 0a`, then `0b` (driver bound), then `1b` (`pu`); the switch binds with LDO1 off; after "LDO1 on" `cam_ldo1 state=enabled microvolts=3050000`; no I2C or regulator errors; after power-down `99: 00` and LDO1 `disabled` | `0b` or `1b` not reached; the switch doesn't bind; the enable fails or LDO1 reads anything but 3.05 V; the torch loses `hsi2c_7`; a watchdog reset | the EXIT trap (LDO1 off, rmmod, `pu`, cs, buck, bb); the hold's 60 s dead-man; a reboot | low-medium: the first LDO output on |
+| RC1.3d | the same with `READ=1` | "eeprom: ack"; "read 32 bytes: N distinct byte values" (not all `0xff`, not all `0x00`); then the power-down as in c | NACK or a timeout (power is already going down: record the bus error, don't power anything else); a stuck bus (`i2c-exynos5` timeouts) | as in c | low: reads only |
+| RC1.3e | `tools/phone-ssh 'cat /run/camera-eeprom-uw.bin' > ~/android/reference/raven-camera/eeprom-uw-head.bin`, then `tools/phone-ssh 'rm /run/camera-eeprom-uw.bin'`; `tools/phone-smoke` | 32 bytes kept off-repo; smoke as before | a regression | reboot | none |
+
+On a NACK, check the cheetah lesson first (CAM2.3): try stock's idle state
+for the bus pins before blaming the rail or the address.
 - **RC1.4** the ultrawide's full sequence (LDO1, LDO4, MCLK, reset); read the
   IMX386 model ID at `0x0016`. Expect `0x0386`. Then power down in reverse.
 
@@ -346,3 +381,19 @@ RC4: IMX586 and IMX663 drivers. RC5: focus (`ak7377`, `sem1215sa`), OIS last.
   MBOX_TX_QUEUE_LEN` from the AoC mailbox within the first 30 s of boot,
   before any camera step. Not from this work, but worth watching
   (AUDIO-PLAN).
+
+### RC1.3 offline checks (2026-10-24, `7.3.0-rc6-omamobile-push1-gb9aba32265ec`): pass
+
+- `out-raven-camera` built from `omamobile-gs101-camera` `b9aba3226` (the
+  SLG51000 commit is now `1225e6733`, with the `cam_ldoN` labels): exit 0,
+  no new compiler warnings; `userspace-consumer.ko` built.
+- `checkpatch --strict` on `b9aba3226`: only the missing Signed-off-by
+  (the human signs off).
+- `dt-validate` on `gs101-raven.dtb`, and on it with all eight overlays
+  applied (`fdtoverlay`): nothing on `usi@109200c0`, `i2c@10920000`,
+  `pmic@75`, its LDOs or `camera-eeprom-ldo1`; what remains (`soc_id`,
+  Trusty, the USB PHY's `orientation-switch`) was there before.
+- With the overlays, `hsi2c_3` and `usi3` are `okay` and
+  `camera-eeprom-ldo1` points at `cam_ldo1`'s phandle. `images` built
+  boot, vendor_boot and dtbo with the AVB footer.
+

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 """camera-pmic-gpio: raise and lower the raven camera PMIC's power lines.
 
-Runs on the phone (device/raven/CAMERA-PLAN.md, stage RC1.2), no
+Runs on the phone (device/raven/CAMERA-PLAN.md, stages RC1.2-RC1.3), no
 dependencies beyond Python. The SLG51000 camera PMIC needs its boost (bb,
 S2MPG11 GPIO 1) and buck (GPIO 3) lines high before its chip select (GPIO
 0), and mainline's binding describes only chip select, which the
@@ -19,8 +19,13 @@ PMIC writes over ACPM; nothing here touches a register).
 
 hold keeps the lines until SIGTERM or SIGINT, or until --max seconds have
 passed (a dead-man switch; at most 120), then lowers chip select if no
-driver holds it, then buck, then bb. Only GPIOs 0, 1 and 3 are ever
-requested: 2 (the telephoto supply) and 4 (pu) are left alone.
+driver holds it, then buck, then bb.
+
+hold --pu also takes pu (GPIO 4), driven low, and raises it on SIGUSR1:
+Google's driver raises pu last, 1 ms after chip select and the PMIC's
+setup, and keeps it high while the PMIC is on. Powering down then lowers
+pu first, 1 ms, then chip select, 10 ms, buck, 1 ms, bb (Google's order).
+GPIO 2 (the telephoto supply) is never requested.
 """
 import argparse
 import ctypes
@@ -32,7 +37,7 @@ import sys
 import time
 
 LABEL = "s2mpg11-gpio"
-CS, BB, BUCK = 0, 1, 3
+CS, BB, BUCK, PU = 0, 1, 3, 4
 PIDFILE = "/run/camera-pmic-gpio.pid"
 MAX_HOLD = 120
 
@@ -138,15 +143,19 @@ def cs_low(chip):
     return True
 
 
-def hold(chip, max_s):
+def hold(chip, max_s, with_pu):
     if os.path.exists(PIDFILE):
         sys.exit(f"{PIDFILE} exists: another hold is running")
-    fd = request(chip, [BB, BUCK], "camera-pmic-power")  # both low first
+    lines = [BB, BUCK] + ([PU] if with_pu else [])
+    fd = request(chip, lines, "camera-pmic-power")  # all low first
     with open(PIDFILE, "w") as f:
         f.write(f"{os.getpid()}\n")
-    stop = []
+    stop, pu = [], []
     signal.signal(signal.SIGTERM, lambda *_: stop.append(1))
     signal.signal(signal.SIGINT, lambda *_: stop.append(1))
+    if with_pu:
+        signal.signal(signal.SIGUSR1, lambda *_: pu.append(1))
+    pu_high = False
     try:
         set_line(fd, 0, 1)
         time.sleep(0.002)
@@ -155,11 +164,21 @@ def hold(chip, max_s):
         log(f"bb and buck high; holding for at most {max_s} s")
         end = time.monotonic() + max_s
         while not stop and time.monotonic() < end:
-            time.sleep(0.1)
+            if pu and not pu_high:
+                set_line(fd, 2, 1)
+                time.sleep(0.001)
+                pu_high = True
+                log("pu high")
+            time.sleep(0.01)
         log("timeout: powering down" if not stop else "stop: powering down")
-        cs_low(chip)
+        if pu_high:
+            set_line(fd, 2, 0)
+            time.sleep(0.001)
+            log("pu low")
+        if cs_low(chip):
+            time.sleep(0.010)
         set_line(fd, 1, 0)
-        time.sleep(0.002)
+        time.sleep(0.001)
         set_line(fd, 0, 0)
         log("buck and bb low")
     finally:
@@ -173,13 +192,15 @@ def main():
     h = sub.add_parser("hold", help="bb, then buck high until stopped")
     h.add_argument("--max", type=int, default=60,
                    help=f"seconds before powering down by itself (at most {MAX_HOLD})")
+    h.add_argument("--pu", action="store_true",
+                   help="also take pu (GPIO 4), low; SIGUSR1 raises it")
     sub.add_parser("cs-low", help="drive chip select low (after rmmod)")
     args = p.parse_args()
     chip, path = find_chip()
     if args.cmd == "hold":
         if not 1 <= args.max <= MAX_HOLD:
             sys.exit(f"--max must be 1..{MAX_HOLD}")
-        hold(chip, args.max)
+        hold(chip, args.max, args.pu)
     else:
         cs_low(chip)
 

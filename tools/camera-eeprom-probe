@@ -1,0 +1,116 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT
+#
+# camera-eeprom-probe: power the raven ultrawide camera's module EEPROM and
+# read it (device/raven/CAMERA-PLAN.md, RC1.3), on the phone. Run it under
+# the laptop's log stream and the watchdog:
+#
+#   tools/phone-ssh 'cat > /run/camera-pmic-gpio' < tools/camera-pmic-gpio
+#   tools/camera-stage --watchdog x --cmd 'READ=0 bash -s' --script tools/camera-eeprom-probe
+#
+# The camera PMIC comes up as in RC1.2 (bb, buck; slg51000-regulator raises
+# chip select), then pu as stock does, then LDO1 alone through the
+# camera-eeprom-test overlay's regulator-output switch, 1 ms, as stock
+# powers this EEPROM. READ=0 stops there: the rail's state is printed and
+# everything powers down. READ=1 also reads the EEPROM at 0x50 on hsi2c_3:
+# one byte at the current address (nothing written), then 32 bytes from
+# offset 0 (the two address bytes and a repeated start: no stop condition,
+# so no write cycle can begin). The bytes are factory calibration: they go
+# to /run/camera-eeprom-uw.bin, never to the log, and only a summary is
+# printed. Copy the file off the phone into ~/android/reference.
+set -u
+READ=${READ:-0}
+G=/run/camera-pmic-gpio
+OUT=/run/camera-eeprom-uw.bin
+PMIC=/sys/kernel/debug/regmap/firmware:power-management:pmic-2-pmic/registers
+DT=/sys/firmware/devicetree/base
+gpio_regs() { echo "S2MPG11 GPIO 98-9e ($1):"; grep -E '^9[89a-e]:' "$PMIC" | tr '\n' ' '; echo; }
+mark() { echo "camera-eeprom-probe: $*" > /dev/kmsg; echo "== $*"; }
+loaded() { grep -c "^$1 " /proc/modules >/dev/null; }
+okay() { tr -d '\0' < "$DT/$1/status" 2>/dev/null | grep -c okay >/dev/null; }
+ldo1() {
+  for r in /sys/class/regulator/regulator.*; do
+    [ "$(cat $r/name 2>/dev/null)" = cam_ldo1 ] &&
+      printf 'cam_ldo1 state=%s microvolts=%s users=%s\n' "$(cat $r/state)" "$(cat $r/microvolts 2>/dev/null)" "$(cat $r/num_users)"
+  done
+}
+off() {
+  [ -n "${sw:-}" ] && [ -e "$sw/state" ] && echo disabled > "$sw/state" && sleep 0.001 && ldo1
+  loaded userspace_consumer && rmmod userspace_consumer
+  loaded slg51000_regulator && rmmod slg51000_regulator
+  # the holder lowers pu, then chip select (10 ms), buck, bb
+  [ -n "${holder:-}" ] && kill "$holder" 2>/dev/null && wait "$holder"
+  gpio_regs "after power-down"
+}
+
+[ -r $G ] || { echo "copy tools/camera-pmic-gpio to $G first"; exit 1; }
+okay soc@0/usi@109600c0/i2c@10960000/pmic@75 || { echo "camera-pmic-test is not in the running DTB"; exit 1; }
+okay soc@0/usi@109200c0/i2c@10920000 && [ -d $DT/camera-eeprom-ldo1 ] ||
+  { echo "camera-eeprom-test is not in the running DTB"; exit 1; }
+for m in slg51000_regulator userspace_consumer; do
+  loaded $m && { echo "$m already loaded: reboot first"; exit 1; }
+done
+bus=
+for d in /sys/bus/i2c/devices/i2c-*; do
+  case $(readlink -f $d/of_node 2>/dev/null) in */i2c@10920000) bus=${d##*i2c-} ;; esac
+done
+[ -n "$bus" ] && [ -c /dev/i2c-$bus ] || { echo "hsi2c_3 has no /dev/i2c-N: did the bus probe?"; exit 1; }
+echo "hsi2c_3 is i2c-$bus"
+gpio_regs "before"
+
+mark "bb, then buck high (S2MPG11 GPIOs 1, 3); pu taken low"
+python3 $G hold --pu --max 60 &
+holder=$!
+trap off EXIT
+sleep 1
+kill -0 $holder 2>/dev/null || { echo "hold exited early"; holder=; exit 1; }
+gpio_regs "bb and buck high: expect 99: 0a"
+
+mark "loading slg51000-regulator (cs high, 10 ms)"
+modprobe slg51000-regulator; echo "modprobe-exit=$?"
+sleep 1
+[ -e /sys/bus/i2c/drivers/slg51000-regulator/0-0075 ] || { echo "slg51000 NOT bound: stop"; exit 1; }
+gpio_regs "cs too: expect 99: 0b"
+
+mark "pu high (S2MPG11 GPIO 4)"
+kill -USR1 $holder; sleep 0.2
+gpio_regs "pu too: expect 99: 1b"
+
+mark "loading userspace-consumer (the LDO1 switch, off)"
+modprobe userspace-consumer; echo "modprobe-exit=$?"
+sleep 0.5
+for d in /sys/bus/platform/drivers/reg-userspace-consumer/*/; do
+  [ -e "$d/state" ] && sw=${d%/}
+done
+[ -n "${sw:-}" ] || { echo "the LDO1 switch did not bind: stop"; exit 1; }
+echo "switch ${sw##*/} state=$(cat $sw/state)"; ldo1
+
+mark "LDO1 on, 1 ms"
+echo enabled > $sw/state; echo "enable-exit=$?"
+sleep 0.002
+ldo1
+dmesg | grep -iE 'slg51000|cam_ldo|userspace|i2c-exynos5|10920000' | tail -10
+
+if [ "$READ" = 1 ]; then
+  mark "EEPROM 0x50 on i2c-$bus: one byte at the current address"
+  if i2ctransfer -y $bus r1@0x50 > /dev/null; then
+    echo "eeprom: ack"
+    mark "EEPROM 0x50: 32 bytes from offset 0 (repeated start, no stop)"
+    if i2ctransfer -y $bus w2@0x50 0x00 0x00 r32 > $OUT.txt; then
+      python3 - $OUT.txt $OUT <<'EOF'
+import sys
+b = bytes(int(x, 16) for x in open(sys.argv[1]).read().split())
+open(sys.argv[2], "wb").write(b)
+kind = ("all 0xff (blank or not answering)" if b == b"\xff" * len(b) else
+        "all 0x00" if not any(b) else f"{len(set(b))} distinct byte values")
+print(f"eeprom: read {len(b)} bytes: {kind}; saved to {sys.argv[2]}")
+EOF
+      rm -f $OUT.txt
+    else
+      echo "eeprom: the 32-byte read failed: stop"
+    fi
+  else
+    echo "eeprom: NO ACK at 0x50: stop"
+  fi
+fi
+mark "powering down: LDO1 off, rmmod, pu, cs, buck, bb"
