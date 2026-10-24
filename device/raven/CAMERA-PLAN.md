@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Pixel 6 Pro (raven): cameras
 
-Status (2026-10-23): **RC0 done (read-only, §5); RC1.1 built and checked offline, not run on the phone.** No camera driver binds on
+Status (2026-10-23): **RC0 done (read-only, §5); RC1.1 passes on the phone (§5); RC1.2 next.** No camera driver binds on
 raven, so there's no `/dev/video*` or `/dev/media*`, and omacam now says "No camera
 found" after 20 s (omacam `4920def`, local). Kernel branch
 `omamobile-gs101-camera` (from `omamobile-gs101-int` `0422abf64`), worktree
@@ -256,3 +256,21 @@ RC4: IMX586 and IMX663 drivers. RC5: focus (`ak7377`, `sem1215sa`), OIS last.
   were there before.
 - `camera-gpio-test` applies to the new `gs101-raven.dtb` with `fdtoverlay`:
   the node goes from `disabled` to `okay`.
+
+### RC1.1 on the phone (2026-10-23, `7.3.0-rc6-omamobile-push1-g23f2d45a3298`): pass
+
+- **RC1.1a** push from `out-raven-camera` with `camera-gpio-test`: boot_b,
+  vendor_boot_b and dtbo_b written and verified; the phone booted the new kernel.
+- **RC1.1b** `s2mpg11-gpio s2mpg11-gpio: in 0x00 out 0x00 out-en 0x3f remote 0x3f`
+  at 3.8 s; gpiochip45, 6 GPIOs, none requested; no ACPM errors.
+- **RC1.1c** all six pins are outputs driven low, so the camera PMIC's bb,
+  buck, cs and pu lines and the tele enable are off. **Open for RC1.2:**
+  every pin has its remote-control bit (`0x9e`) set. Google's driver never
+  reads or writes that register and drives the pins through `0x99` alone,
+  so stock presumably runs the same way, but it isn't verified. RC1.2's
+  first write should be checked by its effect (the SLG51000 answering on
+  `hsi2c_7` after bb, buck and cs), not only by reading `0x99` back.
+- **RC1.1d** `tools/phone-smoke`: all ok, no failed units; dmesg error lines
+  133 (138 before the push).
+- Raven's LWIS nodes give power-up sequences only, no `regulator-voltages`,
+  so the SLG51000 defaults are still RC1.2's to read.
