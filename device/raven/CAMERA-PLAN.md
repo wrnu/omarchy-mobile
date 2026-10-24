@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Pixel 6 Pro (raven): cameras
 
-Status (2026-10-24): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 passes: the ultrawide's module EEPROM answers (§5); RC1.4 passes: the ultrawide's IMX386 answers with model `0x0386` (§5); RC2.0 (power `pd_csis`, read one CSIS register) offline checks pass, RC2.0a passes; RC2.0b stopped at the power-off (the PD driver's 1 ms wait); RC2.0e passes, RC2.0f shows the power-off is stuck, not slow; RC2.0h finds `pd_csis` off at hand-off; RC2.0m passes, RC2.0n shows the power-off sticks without the bus clock too; RC2.0o-p (stock's DTZPC save and restore through EL3) offline checks pass, RC2.0o passes; RC2.0p stops: both DTZPC calls return 0, and the power-off still sticks; stock never powers CSIS without PDP: RC2.0q-r (PDP around the CSIS cycle) offline checks pass, RC2.0q passes; RC2.0r stops: PDP's power-off sticks too, so every power-off after our own power-on sticks; our PD driver wrote the whole CONFIGURATION register where stock changes only bit 0: RC2.0s-t (bit 0 only, plus logging) offline checks pass; RC2.0s shows CONFIGURATION holds only bit 0, so that wasn't it; stock restores the CMU state it saved from the bootloader's on state after every power-on, which we never do; RC2.0u-x (read that state) offline checks pass, push next (§4, §5).** No camera driver binds on
+Status (2026-10-24): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 passes: the ultrawide's module EEPROM answers (§5); RC1.4 passes: the ultrawide's IMX386 answers with model `0x0386` (§5); RC2.0 (power `pd_csis`, read one CSIS register) offline checks pass, RC2.0a passes; RC2.0b stopped at the power-off (the PD driver's 1 ms wait); RC2.0e passes, RC2.0f shows the power-off is stuck, not slow; RC2.0h finds `pd_csis` off at hand-off; RC2.0m passes, RC2.0n shows the power-off sticks without the bus clock too; RC2.0o-p (stock's DTZPC save and restore through EL3) offline checks pass, RC2.0o passes; RC2.0p stops: both DTZPC calls return 0, and the power-off still sticks; stock never powers CSIS without PDP: RC2.0q-r (PDP around the CSIS cycle) offline checks pass, RC2.0q passes; RC2.0r stops: PDP's power-off sticks too, so every power-off after our own power-on sticks; our PD driver wrote the whole CONFIGURATION register where stock changes only bit 0: RC2.0s-t (bit 0 only, plus logging) offline checks pass; RC2.0s shows CONFIGURATION holds only bit 0, so that wasn't it; stock restores the CMU state it saved from the bootloader's on state after every power-on, which we never do; RC2.0u-x (read that state) offline checks pass; RC2.0u stops: genpd's sync_state powers boot-on domains off despite `pd_ignore_unused` (so RC2.0h's "off at hand-off" was wrong) (§4, §5).** No camera driver binds on
 raven, so there's no `/dev/video*` or `/dev/media*`, and omacam now says "No camera
 found" after 20 s (omacam `4920def`, local). Kernel branch
 `omamobile-gs101-camera` (from `omamobile-gs101-int` `0422abf64`), worktree
@@ -1058,3 +1058,31 @@ bit. No DT or script change.
 driver's on, off and failure lines, since `afcea63ba` logs "Power domain
 csis: CONFIGURATION … at probe" at every boot. `bash -n` clean,
 shellcheck as before. Images built (`logs/images-raven-camera-14.log`).
+
+### RC2.0u on the phone (2026-10-24, `7.3.0-rc6-omamobile-push1-gafcea63ba00c`): stop, `pd_ignore_unused` doesn't keep the domains on
+
+`logs/push-raven-camera-12.log`. Booted, taint 0, `pd_ignore_unused` on
+the command line. "csis: CONFIGURATION 0x1 STATUS 0x1 at probe" (on at
+hand-off, as in RC2.0s), then "PM: genpd: Not disabling unused power
+domains" at 0.329265 s, **and then every domain off anyway**, starting
+20 µs later ("aoc off: CONFIGURATION 0x1 -> 0x0", … "csis off", "pdp
+off"). `csis off-0`: nothing to read; RC2.0v-x don't run.
+
+- **Why:** `pd_ignore_unused` only stops `genpd_power_off_unused()`. A
+  domain that is on at boot is held on by `genpd->stay_on` until its
+  provider's `sync_state`, and `of_genpd_sync_state()` then clears
+  `stay_on` and calls `genpd_power_off()` without checking
+  `pd_ignore_unused` (`drivers/pmdomain/core.c:3684-3701`). Each gs101 PD is
+  its own platform device with no consumer, so its `sync_state` runs as
+  soon as it probes. `GENPD_FLAG_NO_SYNC_STATE` doesn't help: for a
+  device-backed provider genpd sets the driver's `sync_state` anyway
+  (`core.c:2696-2701`), unless the driver has its own.
+- **Correction to RC2.0h:** its `off-0` for every domain was this
+  power-off, not the hand-off state. The bootloader hands the camera
+  domains over **on** (RC2.0s, RC2.0u), as `dcadd701b` says. RC2.0h's
+  "ABL hands over BLK_CSIS powered off" and the comparison with cheetah
+  are withdrawn.
+- **To read the bootloader's CMU_CSIS state**, the domain must survive
+  `sync_state`: a bring-up `.sync_state` in the PD driver that leaves a
+  domain marked in the DT on (and `stay_on`), and calls
+  `of_genpd_sync_state()` for the rest.
