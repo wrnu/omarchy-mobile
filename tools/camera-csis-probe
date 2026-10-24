@@ -22,8 +22,16 @@
 # PDP=1 (camera-csis-pdp-test, RC2.0q-r) powers pd_pdp on through the
 # overlay's second bus before pd_csis, as stock never runs CSIS without
 # PDP, and the EXIT trap powers it off after pd_csis.
+# READ=cmu1 and READ=cmu (camera-csis-test, RC2.0z) read CMU_CSIS after our
+# own power-on: the first of the 56 registers stock saves, or all of them
+# (the list camera-csis-abl-probe reads in the bootloader's state). KEEP=1
+# leaves the bus held on at exit; HELD=1 then reads a bus that a KEEP=1
+# run left on, without powering it again, so that a single-register read
+# and the full read share one power-on.
 set -u
 READ=${READ:-0}
+KEEP=${KEEP:-0}
+HELD=${HELD:-0}
 SMC=${SMC:-0}
 PDP=${PDP:-0}
 PARAM=/sys/module/exynos_pm_domains/parameters/tzpc_smc
@@ -41,6 +49,11 @@ show() {
   gate
 }
 off() {
+  if [ "$KEEP" = 1 ]; then
+    mark "KEEP=1: the bus stays on (power/control on)"
+    show
+    return
+  fi
   if [ -n "${dev:-}" ]; then
     echo auto > $dev/power/control
     sleep 0.2
@@ -70,8 +83,15 @@ for d in /sys/bus/platform/devices/*; do
 done
 [ -n "$dev" ] || { echo "no bus@1a440000: camera-csis-test is not in the running DTB"; exit 1; }
 [ "$(basename "$(readlink -f $dev/driver)")" = simple-pm-bus ] || { echo "${dev##*/} has no simple-pm-bus driver: stop"; exit 1; }
-[ "$(cat $dev/power/control)" = auto ] || { echo "power/control is not auto: something holds the block on: reboot first"; exit 1; }
-[ "$(csis_state)" = off-0 ] || { echo "genpd csis is $(csis_state), not off-0: reboot first"; exit 1; }
+if [ "$HELD" = 1 ]; then
+  [ "$(cat $dev/power/control)" = on ] || { echo "HELD=1, but power/control is not on: run KEEP=1 first"; exit 1; }
+  [ "$(csis_state)" = on ] || { echo "HELD=1, but genpd csis is $(csis_state): stop"; exit 1; }
+  [ "$SMC" = 0 ] && [ "$PDP" = 0 ] || { echo "HELD=1 takes no SMC or PDP"; exit 1; }
+else
+  [ "$(cat $dev/power/control)" = auto ] || { echo "power/control is not auto: something holds the block on: reboot first"; exit 1; }
+  [ "$(csis_state)" = off-0 ] || { echo "genpd csis is $(csis_state), not off-0: reboot first"; exit 1; }
+fi
+case $READ in 0|1|cmu1|cmu) ;; *) echo "READ is 0, 1, cmu1 or cmu"; exit 1 ;; esac
 dmesg | grep -cE 'Power domain csis (enable|disable) failed' >/dev/null && { echo "pd_csis failed to switch on this boot: reboot first"; exit 1; }
 pdev=
 if [ "$PDP" = 1 ]; then
@@ -96,7 +116,8 @@ if [ "$SMC" = 1 ]; then
 fi
 clocked=1
 [ -e $dev/of_node/clocks ] || clocked=0
-[ $clocked = 0 ] && [ "$READ" = 1 ] && { echo "the bus holds no clock (camera-csis-pd-test): no read"; exit 1; }
+[ $clocked = 0 ] && [ "$READ" != 0 ] && { echo "the bus holds no clock (camera-csis-pd-test): no read"; exit 1; }
+[ "$SMC" = 1 ] && [ "$READ" != 0 ] && { echo "SMC=1 is a power cycle only: no read"; exit 1; }
 echo "bus: ${dev##*/}"
 show
 
@@ -113,8 +134,12 @@ if [ "$SMC" = 1 ]; then
   mark "DTZPC calls on (tzpc_smc=Y): restore after this power-on, save before the power-off"
   echo Y > $PARAM
 fi
-echo on > $dev/power/control; echo "control-exit=$?"
-sleep 0.2
+if [ "$HELD" = 1 ]; then
+  mark "HELD=1: pd_csis and the bus clock already on from a KEEP=1 run"
+else
+  echo on > $dev/power/control; echo "control-exit=$?"
+  sleep 0.2
+fi
 show
 ok=1
 [ "$(csis_state)" = on ] || { echo "genpd csis did not come on: stop"; ok=0; }
@@ -139,6 +164,40 @@ if base is None or base == ctypes.c_void_p(-1).value:
     sys.exit("mmap: " + os.strerror(ctypes.get_errno()))
 val = ctypes.c_uint32.from_address(base + (addr & (page - 1))).value
 print(f"csis link 0 version: 0x{val:08x}")
+EOF
+  echo "read-exit=$?"
+fi
+
+if [ "${READ#cmu}" != "$READ" ] && [ $ok = 1 ]; then
+  mark "READ=$READ: CMU_CSIS after our own power-on, one 32-bit load each"
+  python3 - "$READ" <<'EOF'
+import ctypes, os, sys
+# The registers Google's CAL saves (csis_save), as camera-csis-abl-probe:
+# the user mux, the controller option, the BUSP divider, the 51 QCH_CONs,
+# then SYSREG_CSIS's DRCG_EN and MEMCLK.
+regs = [0x1a400600, 0x1a400800, 0x1a401800]
+regs += list(range(0x1a403048, 0x1a403114, 4))
+regs += [0x1a420104, 0x1a420108]
+assert len(regs) == 56
+if sys.argv[1] == "cmu1":
+    regs = regs[:1]
+page = os.sysconf("SC_PAGE_SIZE")
+fd = os.open("/dev/mem", os.O_RDONLY | os.O_SYNC)
+libc = ctypes.CDLL(None, use_errno=True)
+libc.mmap.restype = ctypes.c_void_p
+libc.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int,
+                      ctypes.c_int, ctypes.c_int, ctypes.c_long]
+PROT_READ, MAP_SHARED = 1, 1
+maps = {}
+for addr in regs:
+    base = addr & ~(page - 1)
+    if base not in maps:
+        m = libc.mmap(None, page, PROT_READ, MAP_SHARED, fd, base)
+        if m is None or m == ctypes.c_void_p(-1).value:
+            sys.exit("mmap: " + os.strerror(ctypes.get_errno()))
+        maps[base] = m
+    val = ctypes.c_uint32.from_address(maps[base] + (addr - base)).value
+    print(f"0x{addr:08x} = 0x{val:08x}", flush=True)
 EOF
   echo "read-exit=$?"
 fi
