@@ -15,8 +15,14 @@
 # EXIT trap returns the bus to runtime PM's "auto", which powers it off.
 # With camera-csis-pd-test the bus holds no clock: the clock check is
 # skipped, the clock is never touched, and READ=1 is refused.
+# SMC=1 (camera-csis-smc-test, RC2.0o-p) turns on the PD driver's DTZPC
+# save and restore calls to EL3 (exynos_pm_domains.tzpc_smc) for this one
+# cycle: the restore after the power-on, the save before the power-off. The
+# EXIT trap turns them off again after the power-off.
 set -u
 READ=${READ:-0}
+SMC=${SMC:-0}
+PARAM=/sys/module/exynos_pm_domains/parameters/tzpc_smc
 ADDR=0x1a440000
 GENPD=/sys/kernel/debug/pm_genpd/pm_genpd_summary
 CLK=/sys/kernel/debug/clk/clk_summary
@@ -34,6 +40,15 @@ off() {
     sleep 0.2
     show
   fi
+  if [ "$SMC" = 1 ] && [ -w $PARAM ]; then
+    # runtime PM's power-off is asynchronous: wait for the save's line
+    for _ in $(seq 20); do
+      dmesg | grep -cE 'Power domain csis: DTZPC save' >/dev/null && break
+      sleep 0.1
+    done
+    echo N > $PARAM
+    echo "tzpc_smc: $(cat $PARAM)"
+  fi
   dmesg | grep -iE 'csis|power domain|simple-pm-bus|abort|SError' | tail -5
 }
 
@@ -45,7 +60,16 @@ done
 [ "$(basename "$(readlink -f $dev/driver)")" = simple-pm-bus ] || { echo "${dev##*/} has no simple-pm-bus driver: stop"; exit 1; }
 [ "$(cat $dev/power/control)" = auto ] || { echo "power/control is not auto: something holds the block on: reboot first"; exit 1; }
 [ "$(csis_state)" = off-0 ] || { echo "genpd csis is $(csis_state), not off-0: reboot first"; exit 1; }
-dmesg | grep -c 'Power domain csis' >/dev/null && { echo "pd_csis failed to switch on this boot: reboot first"; exit 1; }
+dmesg | grep -cE 'Power domain csis (enable|disable) failed' >/dev/null && { echo "pd_csis failed to switch on this boot: reboot first"; exit 1; }
+if [ "$SMC" = 1 ]; then
+  pdn=$(find /proc/device-tree/ -name 'power-domain@17462400' | head -1)
+  [ -n "$pdn" ] && [ -e "$pdn/google,tzpc-smc" ] || { echo "pd_csis has no google,tzpc-smc: camera-csis-smc-test is not in the running DTB"; exit 1; }
+  [ -w $PARAM ] || { echo "no $PARAM: this kernel has no DTZPC calls"; exit 1; }
+  [ "$(cat $PARAM)" = N ] || { echo "tzpc_smc is already on: reboot first"; exit 1; }
+  dmesg | grep -cE 'Power domain csis: DTZPC .* smc returned' >/dev/null && { echo "a DTZPC call already ran this boot: reboot first"; exit 1; }
+  echo "boot: $(dmesg | grep -cE 'Power domain csis: DTZPC (save|restore) skipped') DTZPC call(s) skipped"
+  [ "$READ" = 1 ] && { echo "SMC=1 is a power cycle only: no read"; exit 1; }
+fi
 clocked=1
 [ -e $dev/of_node/clocks ] || clocked=0
 [ $clocked = 0 ] && [ "$READ" = 1 ] && { echo "the bus holds no clock (camera-csis-pd-test): no read"; exit 1; }
@@ -54,6 +78,10 @@ show
 
 mark "pd_csis on$([ $clocked = 1 ] && echo " and the CSIS bus clock") (runtime PM: power/control on)"
 trap off EXIT
+if [ "$SMC" = 1 ]; then
+  mark "DTZPC calls on (tzpc_smc=Y): restore after this power-on, save before the power-off"
+  echo Y > $PARAM
+fi
 echo on > $dev/power/control; echo "control-exit=$?"
 sleep 0.2
 show

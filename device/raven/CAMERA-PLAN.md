@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Pixel 6 Pro (raven): cameras
 
-Status (2026-10-24): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 passes: the ultrawide's module EEPROM answers (§5); RC1.4 passes: the ultrawide's IMX386 answers with model `0x0386` (§5); RC2.0 (power `pd_csis`, read one CSIS register) offline checks pass, RC2.0a passes; RC2.0b stopped at the power-off (the PD driver's 1 ms wait); RC2.0e passes, RC2.0f shows the power-off is stuck, not slow; RC2.0h finds `pd_csis` off at hand-off; RC2.0m-n (power-cycle without the bus clock) next (§4, §5).** No camera driver binds on
+Status (2026-10-24): **RC0 done (read-only, §5); RC1.1 and RC1.2 pass on the phone (§5); RC1.3 passes: the ultrawide's module EEPROM answers (§5); RC1.4 passes: the ultrawide's IMX386 answers with model `0x0386` (§5); RC2.0 (power `pd_csis`, read one CSIS register) offline checks pass, RC2.0a passes; RC2.0b stopped at the power-off (the PD driver's 1 ms wait); RC2.0e passes, RC2.0f shows the power-off is stuck, not slow; RC2.0h finds `pd_csis` off at hand-off; RC2.0m passes, RC2.0n shows the power-off sticks without the bus clock too; RC2.0o-p (stock's DTZPC save and restore through EL3) offline checks pass, push next (§4, §5).** No camera driver binds on
 raven, so there's no `/dev/video*` or `/dev/media*`, and omacam now says "No camera
 found" after 20 s (omacam `4920def`, local). Kernel branch
 `omamobile-gs101-camera` (from `omamobile-gs101-int` `0422abf64`), worktree
@@ -399,6 +399,33 @@ enabled yet), then runtime-suspend, which powers the sensor down again.
   user mux at reset may select the oscillator [I]) is a separate step. If
   it fails, the DTZPC save SMC before the power-off is the remaining
   difference from stock.
+
+  RC2.0n failed (§5), so RC2.0o-p add stock's DTZPC calls. Kernel
+  `6d15de5fd`: for a gs101 domain with `google,tzpc-smc`, the PD driver
+  makes EL3's `SMC_CMD_PREPARE_PD_ONOFF` (`0x82000410`, group 2) restore
+  (mode 1) after each power-on and save (mode 0) before each power-off;
+  a failed save leaves the domain on. It makes them only while
+  `exynos_pm_domains.tzpc_smc` is `Y`, which defaults to `N`. That matters
+  because **boot does cycle `pd_csis`**: `platform_probe()` attaches the bus
+  with `PD_FLAG_ATTACH_POWER_ON`, then genpd powers it off once the bus is
+  idle. That cycle's power-off finished in RC2.0a and RC2.0m without an
+  error, so **the first cycle after boot works and the attended second
+  one sticks** [I, from the code and the missing failure line; RC2.0o
+  logs it]. With `tzpc_smc=N` the driver logs "DTZPC … skipped" at each
+  of those boot calls instead. `camera-csis-smc-test` is
+  `camera-csis-pd-test` plus `&pd_csis { google,tzpc-smc = <0x1a410204>; }`
+  (D_TZPC_CSIS, stock's `need_smc`). `camera-csis-probe SMC=1` sets the
+  parameter just before the power-on and clears it after the power-off.
+
+  | Step | Command | Expect / Pass | Stop if | Rollback | Risk |
+  | --- | --- | --- | --- | --- | --- |
+  | RC2.0o | `images` with `camera-csis-smc-test` (kernel `g6d15de5fd`), **push (human's go)**; then `tools/phone-ssh 'cat /sys/module/exynos_pm_domains/parameters/tzpc_smc; grep -E "^csis" /sys/kernel/debug/pm_genpd/pm_genpd_summary; dmesg \| grep -E "Power domain csis"'` | boots; `N`; `csis off-0`; one "DTZPC restore skipped" and one "DTZPC save skipped" (the boot cycle, shown); no "smc returned", no failure | no boot; any "smc returned" (a call at boot); a failure at boot | push with `camera-csis-pd-test` | low: no SMC runs |
+  | RC2.0p | `tools/camera-stage --watchdog x --cmd 'SMC=1 READ=0 bash -s' --script tools/camera-csis-probe` | `csis on`, `active`, "DTZPC restore 0x1a410204: smc returned 0"; after `auto`: "DTZPC save … returned 0", then **`csis off-0`**, no failure; `tzpc_smc: N` | a hang or watchdog reset (EL3 hung: as the AoC); a non-zero return (record it); "disable failed (status 0x…)" again: the SMC isn't the difference; stop | the EXIT trap; a reboot (`pstore` after a reset) | medium: the first DTZPC call to EL3 on gs101 |
+
+  If RC2.0p passes, the read comes back as a separate step with the clock
+  (the `camera-csis-test` bus plus the property). If it fails without a
+  hang, what's left is the time the domain stays on: try a cycle with the
+  shortest gap between on and off, to match the working boot cycle.
 
   If RC2.0c aborts, the next test is another overlay, used instead of
   `camera-csis-test` (one boot). It sets `&pd_csis` `status = "disabled"`,
@@ -820,3 +847,15 @@ power-off; RC2.0n does.
   run.
 - The domain is again stuck mid-power-off on this boot: no read; the next
   push reboots it.
+
+### RC2.0o-p offline checks (2026-10-24, kernel `6d15de5fd`): pass
+
+checkpatch `--strict` clean; the driver builds with `W=1` (Android clang)
+with no warnings; the object carries `exynos_pm_domains.tzpc_smc`.
+`camera-csis-smc-test` applies in place of `camera-csis-pd-test`;
+`dt-validate` gives 932 lines against the 928 baseline, the four new ones
+being `google,tzpc-smc` on `power-domain@17462400`, which has no binding
+(the AoC's has the same warning). `camera-csis-probe` with `SMC=1`
+refuses to run without the property, the parameter, or with a DTZPC call
+already made this boot, and refuses `READ=1`; `bash -n` clean,
+shellcheck as before.

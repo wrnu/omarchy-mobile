@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: MIT
+/*
+ * Bring-up only (CAMERA-PLAN.md, RC2.0o-p): camera-csis-pd-test plus the
+ * address of D_TZPC_CSIS that Google's CAL passes to EL3 around each
+ * pd_csis power cycle (pmucal_local.c, need_smc 0x1a410204). The PD
+ * driver makes those calls only once exynos_pm_domains.tzpc_smc is set at
+ * runtime (tools/camera-csis-probe SMC=1), never during genpd's attach
+ * and power-off at boot. Replaces camera-csis-pd-test.
+ */
+/dts-v1/;
+/plugin/;
+
+&pd_csis {
+	google,tzpc-smc = <0x1a410204>;
+};
+
+&{/soc@0} {
+	bus@1a440000 {
+		compatible = "simple-pm-bus";
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges = <0x0 0x1a440000 0x1000>;
+		power-domains = <&pd_csis>;
+	};
+};
