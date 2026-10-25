@@ -22,6 +22,12 @@
 # first save: the probe then expects the domain off with that one save, and
 # goes straight to the two cycles.
 #
+# Kernels whose PD driver logs only DTZPC failures (the bring-up switches
+# dropped) are QUIET: genpd's state stands in for the success lines, since
+# a failed restore fails the power-on (genpd stays off) and a failed save
+# fails the power-off (genpd stays on), and a power-on before any save is
+# refused.
+#
 # SYSREG=drcg (kernels whose cmu_csis has samsung,sysreg): the clock driver
 # sets SYSREG_CSIS's DRCG_EN (all ones) and clears MEMCLK at probe, so those
 # two are printed rather than compared with the bootloader's 0 and 1.
@@ -46,7 +52,7 @@ show() {
   cnt gout_cmu_csis_bus
 }
 pdlog() { dmesg | grep -E 'Power domain csis|17462400.power-domain|released|1a400000.clock-controller' | tail -"${1:-4}"; }
-failed() { dmesg | grep -cE 'Power domain csis (enable|disable) failed|Power domain csis: kept on|Power domain csis: no DTZPC save' >/dev/null; }
+failed() { dmesg | grep -cE 'Power domain csis (enable|disable) failed|Power domain csis: kept on|Power domain csis: no DTZPC save|Power domain csis: DTZPC (save|restore) failed' >/dev/null; }
 # wait up to 2 s for genpd's csis state to read $1
 wait_state() {
   for _ in $(seq 20); do
@@ -60,6 +66,8 @@ nsave() { dmesg | grep -c 'Power domain csis: DTZPC save 0x1a410204: smc returne
 nrestore() { dmesg | grep -c 'Power domain csis: DTZPC restore 0x1a410204: smc returned 0x0'; }
 AUTO=0
 [ -e $P/tzpc_smc ] || AUTO=1
+QUIET=0
+[ "$AUTO" = 1 ] && [ "$(dmesg | grep -c 'Power domain csis: DTZPC save')" = 0 ] && QUIET=1
 done_msg() {
   [ "$AUTO" = 0 ] && { echo N > $P/tzpc_smc; echo "tzpc_smc: $(cat $P/tzpc_smc)"; }
   dmesg | grep -iE 'abort|SError' | tail -3
@@ -123,8 +131,10 @@ dmesg | grep -cE 'Power domain csis: DTZPC restore' >/dev/null && { echo "a DTZP
 if [ "$AUTO" = 1 ]; then
   [ -e "$pdn/google,keep-boot-on" ] && { echo "AUTO, but pd_csis still has google,keep-boot-on: stop"; exit 1; }
   [ "$(csis_state)" = off-0 ] || { echo "genpd csis is $(csis_state), not off-0 after the boot-time save: stop"; exit 1; }
-  [ "$(nsave)" = 1 ] || { echo "not exactly one clean DTZPC save at boot: stop"; exit 1; }
-  dmesg | grep -cE 'Power domain csis: DTZPC save' | grep -qx 1 || { echo "a DTZPC save failed at boot: stop"; exit 1; }
+  if [ "$QUIET" = 0 ]; then
+    [ "$(nsave)" = 1 ] || { echo "not exactly one clean DTZPC save at boot: stop"; exit 1; }
+    dmesg | grep -cE 'Power domain csis: DTZPC save' | grep -qx 1 || { echo "a DTZPC save failed at boot: stop"; exit 1; }
+  fi
 else
   [ -e "$pdn/google,keep-boot-on" ] || { echo "pd_csis lacks google,keep-boot-on: stop"; exit 1; }
   [ -w $P/tzpc_smc ] && [ -w $P/release_kept ] || { echo "this kernel has no tzpc_smc or release_kept: stop"; exit 1; }
@@ -154,7 +164,7 @@ if [ "$AUTO" = 0 ]; then
   pdlog 3
   [ "$(nsave)" = 1 ] || { echo "no clean DTZPC save: stop"; exit 1; }
 else
-  mark "pd_csis powered off at boot with the first DTZPC save"
+  mark "pd_csis powered off at boot with the first DTZPC save (quiet=$QUIET)"
   pdlog 4
 fi
 
@@ -165,7 +175,8 @@ for cycle in 1 2; do
   show
   pdlog 3
   [ "$(csis_state)" = on ] || { echo "genpd csis did not come on: stop"; exit 1; }
-  [ "$(nrestore)" = "$cycle" ] || { echo "no clean DTZPC restore for this power-on: stop, no read"; exit 1; }
+  failed && { echo "a DTZPC call or power switch failed: stop, no read"; exit 1; }
+  [ "$QUIET" = 1 ] || [ "$(nrestore)" = "$cycle" ] || { echo "no clean DTZPC restore for this power-on: stop, no read"; exit 1; }
   [ "$(cat $dev/power/runtime_status)" = active ] || { echo "the bus is not active: stop"; exit 1; }
   [ "$(cat $cmu/power/runtime_status)" = active ] || { echo "CMU_CSIS did not resume: stop, no read"; exit 1; }
 
@@ -183,6 +194,6 @@ for cycle in 1 2; do
   fi
   show
   pdlog 3
-  [ "$(nsave)" = $((cycle + 1)) ] || { echo "no clean DTZPC save before this power-off: stop"; exit 1; }
+  [ "$QUIET" = 1 ] || [ "$(nsave)" = $((cycle + 1)) ] || { echo "no clean DTZPC save before this power-off: stop"; exit 1; }
 done
 mark "two cycles done"
