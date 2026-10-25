@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: MIT
+/*
+ * Bring-up only (CAMERA-PLAN.md, RC2.0zh): CMU_CSIS through the clock
+ * driver. The kernel's cmu_csis (gs101.dtsi, disabled there) saves its
+ * registers on runtime suspend and restores them on runtime resume, after
+ * genpd's power-on and the PD driver's DTZPC restore: what RC2.0zf-zg did
+ * with three raw writes.
+ *
+ * - pd_csis: kept on as the bootloader left it until
+ *   tools/camera-csis-cmu-probe releases it with tzpc_smc set, so that its
+ *   first power-off makes the DTZPC save (D_TZPC_CSIS's need_smc address).
+ * - cmu_csis enabled: it probes in the bootloader's state.
+ * - The test bus: pd_csis and CMU_CSIS's own PCLK (CLK_GOUT_CSIS_PCLK, 3),
+ *   so that powering the bus runtime-resumes the CMU.
+ * Replaces camera-csis-tzpc-test.
+ */
+/dts-v1/;
+/plugin/;
+
+&pd_csis {
+	google,keep-boot-on;
+	google,tzpc-smc = <0x1a410204>;
+};
+
+&cmu_csis {
+	status = "okay";
+};
+
+&{/soc@0} {
+	bus@1a440000 {
+		compatible = "simple-pm-bus";
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges = <0x0 0x1a440000 0x1000>;
+		power-domains = <&pd_csis>;
+		clocks = <&cmu_csis 3>;
+	};
+};
