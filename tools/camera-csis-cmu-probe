@@ -52,7 +52,7 @@ show() {
   cnt gout_cmu_csis_bus
 }
 pdlog() { dmesg | grep -E 'Power domain csis|17462400.power-domain|released|1a400000.clock-controller' | tail -"${1:-4}"; }
-failed() { dmesg | grep -cE 'Power domain csis (enable|disable) failed|Power domain csis: kept on|Power domain csis: no DTZPC save|Power domain csis: DTZPC (save|restore) failed' >/dev/null; }
+failed() { dmesg | grep -cE 'Power domain csis (enable|disable) failed|Power domain csis: kept on|Power domain csis: no DTZPC save|Power domain csis: DTZPC (save|restore) failed|SMC for power domain csis (en|dis)able failed' >/dev/null; }
 # wait up to 2 s for genpd's csis state to read $1
 wait_state() {
   for _ in $(seq 20); do
@@ -123,7 +123,7 @@ cmu=/sys/bus/platform/devices/1a400000.clock-controller
 [ "$(basename "$(readlink -f $cmu/driver 2>/dev/null)")" = gs101-cmu ] || { echo "CMU_CSIS has no gs101-cmu driver: stop"; exit 1; }
 [ -d $CLKD/gout_csis_csis_pclk ] || { echo "no gout_csis_csis_pclk clock: stop"; exit 1; }
 pdn=$(find /proc/device-tree/ -name 'power-domain@17462400' | head -1)
-[ -n "$pdn" ] && [ -e "$pdn/google,tzpc-smc" ] || { echo "pd_csis lacks google,tzpc-smc: stop"; exit 1; }
+[ -n "$pdn" ] && { [ -e "$pdn/google,tzpc-smc" ] || [ -e "$pdn/samsung,dtzpc" ]; } || { echo "pd_csis has no DTZPC (google,tzpc-smc or samsung,dtzpc): stop"; exit 1; }
 failed && { echo "pd_csis failed to switch, or was kept on, this boot: reboot first"; exit 1; }
 [ "$(cat $dev/power/control)" = auto ] || { echo "the bus's power/control is not auto: reboot first"; exit 1; }
 [ "$(cat $cmu/power/runtime_status)" = suspended ] || { echo "CMU_CSIS is not runtime-suspended: stop"; exit 1; }

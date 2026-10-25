@@ -1,16 +1,15 @@
 // SPDX-License-Identifier: MIT
 /*
- * Bring-up only (CAMERA-PLAN.md, RC2.0zh-zj): CMU_CSIS through the clock
+ * Bring-up only (CAMERA-PLAN.md, RC2.0zh-zl): CMU_CSIS through the clock
  * driver. The kernel's cmu_csis (gs101.dtsi, disabled there) saves its
  * registers on runtime suspend and restores them on runtime resume, after
  * genpd's power-on and the PD driver's DTZPC restore: what RC2.0zf-zg did
  * with three raw writes.
  *
- * - pd_csis: google,tzpc-smc, D_TZPC_CSIS's need_smc address. From kernel
- *   77c81d480 the PD driver always saves before a power-off and
- *   restores after a power-on, so the domain isn't kept on any more: genpd's
- *   sync_state powers it off at boot, with the first save, from the
- *   bootloader's state.
+ * - pd_csis: samsung,dtzpc, its DTZPC node (as in André Draszik's gs101
+ *   power domain series; kernel 37b6fd866 on, replacing google,tzpc-smc).
+ *   The PD driver saves at probe, from the bootloader's state, before every
+ *   power-off, and restores after every power-on, at the DTZPC plus 0x204.
  * - cmu_csis enabled: it probes in the bootloader's state.
  * - The test bus: pd_csis and CMU_CSIS's own PCLK (CLK_GOUT_CSIS_PCLK, 3),
  *   so that powering the bus runtime-resumes the CMU.
@@ -20,7 +19,7 @@
 /plugin/;
 
 &pd_csis {
-	google,tzpc-smc = <0x1a410204>;
+	samsung,dtzpc = <&dtzpc_csis>;
 };
 
 &cmu_csis {
