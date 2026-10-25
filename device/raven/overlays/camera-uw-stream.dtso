@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: MIT
+/*
+ * Bring-up only (CAMERA-PLAN.md, RC2.1-RC2.2): the ultrawide's CSIS link 2
+ * and the shared DC-PHY, as cheetah's camera-stream-link2. The nodes and
+ * the IMX386 endpoint are in the kernel (gs101.dtsi, gs101-raven.dts,
+ * kernel e8478f15a on), disabled; this turns them on. Needs
+ * camera-csis-cmu-test (pd_csis's DTZPC, cmu_csis) and camera-uw-test (the
+ * sensor). phy_gs201_mipi_dcphy_rx and gs201_csis are blacklisted on the
+ * phone before a DTB with this overlay boots; tools/camera-cap-test loads
+ * them.
+ */
+/dts-v1/;
+/plugin/;
+
+&csis2 {
+	status = "okay";
+};
+
+&csis_dcphy {
+	status = "okay";
+};

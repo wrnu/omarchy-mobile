@@ -684,11 +684,47 @@ enabled yet), then runtime-suspend, which powers the sensor down again.
   passes, the power cycle is the cause, and the PD driver needs the SMC
   (save before every power-off, so EL3 never restores an empty slot) and
   the CMU_CSIS restore.
-- **RC2.1** find the ultrawide's link and lanes. Arm all eight links' error
-  interrupts, start the sensor streaming, and see which link reports SOT
-  activity (cheetah's method, `C/` 4.4).
-- **RC2.2** one raw frame to memory through CSIS WDMA (`v4l2-ctl --stream-mmap
-  --stream-count=1`). Then `cam -c1 --capture=10` through libcamera.
+- **RC2.1** the ultrawide's link, link only (no DMA). Stock's DT doesn't
+  name the link; cheetah's ultrawide is on link 2 with four lanes, and
+  raven uses the same pads, so link 2 goes first. Kernel `e8478f15a`:
+  - `c065e1fc2`: the CSIS and DC-PHY bindings take `google,gs101-csis` /
+    `google,gs101-mipi-dcphy-rx` before the gs201 compatible, and the
+    CSIS's `link` and `dma` clocks;
+  - `6cedd38e5`: gs201-csis powers the block (pd_csis, the CMU through its
+    clocks) by runtime PM, only while streaming; the IRQs and debugfs
+    files touch no register while it is off (gs201's block is always on,
+    gs101's is RC2.0's power-cycled domain);
+  - `b7c9e0bda`: the DC-PHY enables runtime PM, so `phy_power_on` resumes
+    pd_csis through the PHY core;
+  - `64a6db97b`: CSIS links 0, 1, 2, 4 and 6 and the DC-PHY in gs101.dtsi
+    (Google's gs101-isp.dtsi addresses: link n at 0x1a440000 + n·0x10000,
+    SPI 294 + n; WDMA context 0 at 0x1a4d7000, SPI 302; PHY isolation PMU
+    0x3ebc), disabled;
+  - `e8478f15a`: raven's IMX386 endpoint to `csis2`, a 128 MiB camera pool
+    below 4 GiB, and the DC-PHY's firmware name.
+  The new overlay `camera-uw-stream` enables `csis2` and `csis_dcphy`;
+  `camera-csis-cmu-test` stays (pd_csis's DTZPC, cmu_csis). Before the
+  push: `phy_gs201_mipi_dcphy_rx` and `gs201_csis` are blacklisted in the
+  phone's `omamobile-camera-bringup.conf`, and raven's own `gs201-dcphy.bin`
+  (from raven's HAL, never committed) is in
+  `/usr/lib/firmware/updates/omamobile/camera/`. On raven,
+  `tools/camera-cap-test` powers the camera PMIC as `camera-uw-probe` does
+  (held at most 120 s) and powers it down at exit. Cheetah's CAM DVFS
+  votes don't apply: gs101's node has no `cam`/`int` clock, so the block
+  runs at the bootloader's rates.
+- **RC2.2** one raw frame to memory through CSIS WDMA context 0. Then
+  `cam -c1 --capture=10` through libcamera's simple pipeline and soft ISP.
+
+  | Step | Command | Expect / Pass | Stop if | Rollback | Risk |
+  | --- | --- | --- | --- | --- | --- |
+  | RC2.1a | `images` (kernel `ge8478f15a`, `camera-uw-stream` added), push; then `tools/phone-ssh 'lsmod \| grep -E "gs201\|imx386"; ls /sys/bus/platform/devices/ \| grep -E "csis\|phy@1a4f"; grep -E "^csis" -A3 /sys/kernel/debug/pm_genpd/pm_genpd_summary'` | boots; the two devices exist, neither module loaded; `csis off-0` | no boot; a module loaded (the blacklist); `csis on` | push kernel `g37b6fd8663e4` without `camera-uw-stream` | low: disabled-by-default nodes, modules blacklisted |
+  | RC2.1b | `tools/phone-ssh 'cat > /run/camera-pmic-gpio' < tools/camera-pmic-gpio`; `tools/camera-stage --watchdog x --cmd 'LINK=2 DMA=0 bash -s' --script tools/camera-cap-test` | modules bind; one sensor-to-CSIS link; colour bars stream 5 s; `stats` shows frame starts and ends rising on link 2, no CRC/ECC errors | a hang (watchdog reset); any DTZPC failure line; an abort | a reboot | medium: the first CSIS and PHY writes on gs101, under the watchdog |
+  | RC2.2a | `tools/camera-stage --watchdog x --cmd 'LINK=2 DMA=1 FRAMES=4 bash -s' --script tools/camera-cap-test` | 4 frames in `/tmp/cam-2016x1508.raw` (4 × 2016×1508 packed 10-bit, stride aligned), colour bars when unpacked on the laptop | a hang; an SMMU/S2MPU fault; an all-zero file (DMA blocked) | a reboot | medium: the first DMA write |
+  | RC2.2b | as RC2.2a with `PATTERN=0` | a real image (dark or lit) | as RC2.2a | a reboot | medium |
+
+  If RC2.1b streams but link 2 sees nothing, the next boot moves the
+  endpoint to another link (one per boot, link 0, 1, 4, 6 in that order),
+  through an overlay that rewrites the two `remote-endpoint`s.
 
 ### Later
 
@@ -1657,3 +1693,34 @@ which touches every gs101 domain user, not only the camera; then drop
 the guard if a probe-time save of an off domain proves safe; post
 CMU_CSIS (bindings, driver, sysreg, DT) as its own series. Then the
 CSIS link registers.
+
+### RC2.1a and RC2.1b on the phone (2026-10-25, `7.3.0-rc6-omamobile-push1-ge8478f15aaac`): RC2.1a passes, RC2.1b stops at the CSIS probe
+
+No open pull request covers this work. linux-omarchy-mobile #9 (the gs101
+power domains) is this branch's base, rebased; omarchy-mobile #22 (raven
+tools), omacam and tracking issue #2 have no camera work.
+
+Offline: checkpatch `--strict` clean on the six commits apart from the
+missing Signed-off-by (the human's); W=1 clean for `gs201-csis.o` and
+`phy-gs201-mipi-dcphy-rx.o`; both bindings pass dt-doc-validate; the merged
+DTB has `csis2` and the DC-PHY `okay` with the endpoint, four lanes, the
+pool and the firmware name, and dt-validate finds nothing camera-related.
+
+RC2.1a: boots, taint 0; `1a460000.csis` and `1a4f0000.phy` exist, neither
+module loaded. **Deviation:** `csis on`, not `off-0`: genpd's sync_state
+waits for the unbound (blacklisted) CSIS consumer, so the domain stays in
+the bootloader's state (as RC2.0y held it). Not a fault; binding the
+drivers releases it.
+
+RC2.1b (`logs/camera-20261025-152409-x.log`): the PMIC came up and powered
+down in order; imx386 read model `0x0386` (the 4032x2272 mode dropped: its
+794.6 MHz link isn't in the DT); the DC-PHY bound and runtime-suspended;
+gs201-csis failed its probe:
+
+    gs201-csis 1a460000.csis: error -ENXIO: IRQ wdma not found
+
+gs101's GIC has `#interrupt-cells = <4>` (the PPI partition cell), and the
+CSIS nodes gave three: the link interrupt parsed by luck (SPI 296, hwirq
+328, with the next entry's first cell as its fourth), the WDMA entry ran
+short. dt-validate didn't catch it. Fixed in the kernel with the fourth
+cell on all ten entries (a fixup of `64a6db97b`); RC2.1a-b again.

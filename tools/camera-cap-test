@@ -56,9 +56,42 @@ s5kgm5) CODE=SBGGR10_1X10 FOURCC=pBAA MOD=s5kgn1 LENSMOD=sem1215 LENS=${LENS:-1}
 esac
 say() { echo "cap-test: $*"; echo "cap-test: $*" > /dev/kmsg; }
 
+# raven (device/raven/CAMERA-PLAN.md, RC2.1-RC2.2): the SLG51000 camera PMIC
+# needs its bb, buck and pu lines from /run/camera-pmic-gpio (as in
+# tools/camera-uw-probe), held for at most 120 s (a dead-man switch), and
+# everything is unloaded and powered down again at exit.
+RAVEN=0
+tr -d '\0' < /sys/firmware/devicetree/base/compatible | grep -c 'google,gs101-raven' >/dev/null && RAVEN=1
+raven_off() {
+	for m in gs201_csis imx386 slg51000_regulator; do
+		grep -c "^$m " /proc/modules >/dev/null && rmmod $m
+	done
+	# the holder lowers pu, then chip select (10 ms), buck, bb
+	[ -n "${holder:-}" ] && kill "$holder" 2>/dev/null && wait "$holder"
+	say "raven: camera PMIC powered down"
+}
+if [ "$RAVEN" = 1 ]; then
+	[ -r /run/camera-pmic-gpio ] || { echo "copy tools/camera-pmic-gpio to /run/camera-pmic-gpio first"; exit 1; }
+	for m in slg51000_regulator imx386 gs201_csis; do
+		grep -c "^$m " /proc/modules >/dev/null && { echo "$m already loaded: reboot first"; exit 1; }
+	done
+	say "raven: bb, buck high, pu low (held at most 120 s)"
+	python3 /run/camera-pmic-gpio hold --pu --max 120 &
+	holder=$!
+	trap raven_off EXIT
+	sleep 1
+	kill -0 "$holder" 2>/dev/null || { say "hold exited early"; holder=; exit 1; }
+	modprobe slg51000-regulator || { say "modprobe slg51000-regulator failed"; exit 1; }
+	sleep 1
+	ls -d /sys/bus/i2c/drivers/slg51000-regulator/*-0075 >/dev/null 2>&1 || { say "slg51000 not bound"; exit 1; }
+	kill -USR1 "$holder"; sleep 0.2
+	say "raven: camera PMIC up, pu high"
+fi
+
 # Modules, in order; gs201_csis gets the step's parameters on every run.
 modprobe sec_acpm 2>/dev/null
 MODS="gpio_s2mpg13 slg51002_regulator $MOD phy_gs201_mipi_dcphy_rx"
+[ "$RAVEN" = 1 ] && MODS="$MOD phy_gs201_mipi_dcphy_rx"
 [ "$LENS" = 1 ] && MODS="$MODS $LENSMOD"
 for m in $MODS; do
 	modprobe "$m" || { say "modprobe $m failed"; exit 1; }
