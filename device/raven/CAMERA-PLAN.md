@@ -1724,3 +1724,82 @@ CSIS nodes gave three: the link interrupt parsed by luck (SPI 296, hwirq
 328, with the next entry's first cell as its fourth), the WDMA entry ran
 short. dt-validate didn't catch it. Fixed in the kernel with the fourth
 cell on all ten entries (a fixup of `64a6db97b`); RC2.1a-b again.
+
+### RC2.1b again to RC2.1i on the phone (2026-10-25, `7.3.0-rc6-omamobile-push1-g3f5d357b540d`): stop, link 2 sees nothing
+
+With the four-cell interrupts the drivers bind. The IMX386 streamed colour
+bars for 5 s (`logs/camera-20261025-153724-x.log`), and the DC-PHY set up
+link 2 for four D-PHY lanes at 1548.288 Mbps (settle 7, the PHY isolation
+released). But CSIS link 2 counted nothing: FS/FE 0, `FRM_CNT` 0, no link
+interrupt and no error bit. The same held with the endpoint moved, one
+boot each, to links 0, 6 and 4 (overlays `camera-uw-link0`, `-link6` and
+`-link4`; logs `154617`, `155115` and `155549`).
+
+Read-only checks between those runs (one register per call, blocks known
+powered and clocked):
+
+- the CMU_CSIS link-wrap ACLK gates (0x1a402064-0x1a402080) read 0x00200000
+  (on), and their QCH registers 0x003f0002;
+- each DC-PHY lane's registers held what the driver wrote;
+- link register 0x700 tracks the PHY's lane state: 0xe2 (or 0xf2) on a dead
+  link, 0 on a link that receives (RC2.1j). It is the quickest check of
+  which link the sensor's lanes reach.
+
+Raven's HAL keeps a per-link table of DC-PHY bases (`liblyric_hwl.so`, word
+8 of each 0x30-byte entry): link 0 at 0x1300, 1 at 0x1b00, 2 at 0x2300, 3 at
+0x2800, 4 at 0x2b00, 5 at 0x3000, 6 at 0x3300 and 7 at 0x3800. Its PHY setup
+takes (lanes, rate, C-PHY, base), and its stream start writes SYSREG_CSIS
+0x408-0x410, 0x430 onwards, 0x488 and 0x500. The HAL's link-2 settings for
+this sensor were misleading: they name link 2, but the lanes aren't wired
+there.
+
+### RC2.1j and RC2.1k on the phone (2026-10-25, `7.3.0-rc6-omamobile-push1-g3f5d357b540d`): pass, **the ultrawide is on link 1**
+
+RC2.1j, overlay `camera-uw-link1` (`logs/camera-20261025-163514-x.log`):
+link 1, DC-PHY slave 1, receives. Over 5 s: FS and FE 147 each, all on VC
+0, with per-line errors at the CSIS bus's 66.56 MHz (ERR_ID, ERR_OVER and
+VRESOL: INT0 bits 0 and 4, INT1 bit 6, the same failure cheetah had at 67
+MHz before its CAM vote).
+
+gs101 has no CAM DVFS domain. The CSIS bus's rate is the divider
+`dout_cmu_csis_bus` in CMU_TOP (`CLK_DOUT_CMU_CSIS_BUS`): 399.36 MHz from
+its mux, divided by 6 at boot. The overlay gives it to the driver as the
+optional `cam` clock, so `cam_khz=400000` sets it to 399.36 MHz while
+streaming and puts the old rate back at stop.
+
+RC2.1k (`163902`), with the `cam` clock: FS/FE 147 each, 294 interrupts,
+and only one error bit: INT0 bit 3, once per frame (WRONG_CONFIG on the
+embedded-data line, as on cheetah). Taint 0, and the PMIC powered down in
+order.
+
+### RC2.2a to RC2.2c on the phone (2026-10-25, `7.3.0-rc6-omamobile-push1-g3f5d357b540d`): pass, **the first raw frames**
+
+Logs `164001` to `164206`. `/tmp/cam-2016x1508.raw` on the phone is RAW10
+packed, stride 2560, 1508 lines per frame. Images are unpacked on the
+laptop and never committed.
+
+| Step | Run | Result |
+| --- | --- | --- |
+| RC2.2a | `LINK=1 DMA=1 FRAMES=4` | 4 WDMA frames, no WDMA error, no SMMU fault; the colour bars come out right (RGGB, four bars); frame 0 is all zero |
+| RC2.2b | as RC2.2a, `PATTERN=0` | real frames, all at black level (62-72) |
+| RC2.2c | `FRAMES=8 PATTERN=0 CTRLS="analogue_gain=480"` | 8 frames, 0 errors; frames 1-7 range 46-97, mean 64.5: noise around black level 64, no scene |
+
+The exposure was 3589 lines (frame length 3599, about 33 ms) with digital
+gain 0x100. Noise grows with analogue gain, so the analogue chain works.
+
+RC2.2d (`logs/camera-20261025-164506-x.log`, the run after a refused
+`vblank`: v4l2-ctl calls it `vertical_blanking`):
+`CTRLS="vertical_blanking=9000;exposure=10500,analogue_gain=480,digital_gain=1024"`,
+frame length 10508 (about 100 ms), digital gain 0x400. 4 frames, no WDMA
+error. Frames 1-3 range 33-341 with mean 74 (R 70, Gr/Gb 78, B 73), and a
+contrast-stretched green plane shows a scene: a bright spot at the top
+edge and smooth shading, light leaking past a lens lying face down. **The
+pixel array reads out**; the earlier frames were just dark. Frame 0 is all
+zero in every run (the WDMA's first buffer, before the first frame end).
+
+Taint stayed 0 throughout, and the PMIC powered down cleanly after each
+run.
+
+Next: the kernel DT moves `uw_out` to `csis1_in` and gives `csis1` the
+`cam` clock (replacing `camera-uw-stream` and the link overlays), and then
+`cam -c1 --capture=10`.
