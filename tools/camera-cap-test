@@ -64,7 +64,8 @@ RAVEN=0
 tr -d '\0' < /sys/firmware/devicetree/base/compatible | grep -c 'google,gs101-raven' >/dev/null && RAVEN=1
 raven_off() {
 	for m in gs201_csis imx386 slg51000_regulator; do
-		grep -c "^$m " /proc/modules >/dev/null && rmmod $m
+		grep -c "^$m " /proc/modules >/dev/null || continue
+		rmmod $m || { say "rmmod $m failed: the PMIC stays up until a reboot"; fuser -v /dev/video* /dev/media* /dev/v4l-subdev* 2>&1; }
 	done
 	# the holder lowers pu, then chip select (10 ms), buck, bb
 	[ -n "${holder:-}" ] && kill "$holder" 2>/dev/null && wait "$holder"
@@ -142,7 +143,7 @@ v4l2-ctl -d "$SUBDEV" -l | grep -E "exposure|gain|vblank|test_pattern|pixel_valu
 v4l2-ctl -d "$VIDEO" --set-fmt-video=width="$W",height="$H",pixelformat=$FOURCC || exit 1
 v4l2-ctl -d "$VIDEO" --get-fmt-video | grep -E "Width|Pixel Format|Bytes per Line|Size Image"
 
-DBG=$(ls -d /sys/kernel/debug/1a4$((4 + LINK))0000.csis 2>/dev/null | head -1)
+DBG=$(ls -d /sys/kernel/debug/$(printf "%x" $((0x1a44 + LINK)))0000.csis 2>/dev/null | head -1)
 # PRE_STREAM=cmd: a bring-up command run just before streaming (e.g. power
 # the sensor up first through its runtime PM control); $SENSOR_DEV is its
 # I2C device name
@@ -159,11 +160,26 @@ if [ "$DMA" = 1 ]; then
 else
 	say "streaming ${SECS}s, link only (no DMA)"
 	timeout "$SECS" v4l2-ctl -d "$VIDEO" --stream-mmap --stream-count=1000 >/dev/null &
+	streamer=$!
 	sleep 2
 	say "mid-stream state"
 	[ -n "$DBG" ] && cat "$DBG/stats" "$DBG/scan"
 	cat /sys/kernel/debug/*.phy/regs 2>/dev/null
-	wait
+	# MID=cmd: a bring-up command run mid-stream ($SENSOR_DEV, $SENSOR_BUS:
+	# the sensor's I2C device and bus number), followed by the same dump
+	# (e.g. stop the sensor's output and see which PHY or link register
+	# follows it)
+	if [ -n "${MID:-}" ]; then
+		SENSOR_BUS=${SENSOR_DEV%%-*}
+		say "mid-stream: $MID"
+		eval "$MID"
+		sleep 0.5
+		say "after mid-stream command"
+		[ -n "$DBG" ] && cat "$DBG/stats" "$DBG/scan"
+		cat /sys/kernel/debug/*.phy/regs 2>/dev/null
+	fi
+	# only the streamer: on raven the PMIC holder is a background job too
+	wait "$streamer"
 fi
 echo "rc=$?"
 [ -n "$DBG" ] && cat "$DBG/stats"

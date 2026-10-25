@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: MIT
+/*
+ * Bring-up only (CAMERA-PLAN.md, RC2.1j): the ultrawide on CSIS link 1
+ * (DC-PHY slave 1, four lanes of its own) instead of link 2, used instead
+ * of camera-uw-stream for one boot. Links 0, 2, 4 and 6 saw nothing while
+ * the IMX386 streamed colour bars; link 1 is the one receiver not tried.
+ * csis2 stays disabled; its stale endpoint is never parsed.
+ *
+ * RC2.1k: frames arrived on link 1 (RC2.1j) with per-line errors at the
+ * CSIS bus's 66.56 MHz, as on cheetah at 67 MHz. gs101 has no CAM DVFS
+ * domain; the bus divider in CMU_TOP is the CAM rate, so it is the
+ * driver's "cam" clock (cam_khz, 400 MHz while streaming, restored after).
+ */
+/dts-v1/;
+/plugin/;
+
+&csis1 {
+	/* no cpp here: CLK_GOUT_CSIS_MIPI_PHY_LINK_WRAP_ACLK_CSIS1 (29),
+	 * CLK_GOUT_CSIS_CSISX8_ACLK_CSIS_DMA (6), CLK_DOUT_CMU_CSIS_BUS (95)
+	 */
+	clocks = <&cmu_csis 29>, <&cmu_csis 6>, <&cmu_top 95>;
+	clock-names = "link", "dma", "cam";
+	memory-region = <&camera_pool>;
+	status = "okay";
+};
+
+&csis1_in {
+	remote-endpoint = <&uw_out>;
+	data-lanes = <1 2 3 4>;
+};
+
+&uw_out {
+	remote-endpoint = <&csis1_in>;
+};
+
+&csis_dcphy {
+	status = "okay";
+};
