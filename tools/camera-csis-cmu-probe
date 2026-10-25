@@ -17,6 +17,11 @@
 # DTZPC save). tzpc_smc is turned off at the end; the PD driver then keeps
 # the domain on rather than power it off without a save.
 #
+# On kernels without the tzpc_smc parameter (RC2.0zj on) the PD driver
+# always saves and restores, and genpd powers pd_csis off at boot with the
+# first save: the probe then expects the domain off with that one save, and
+# goes straight to the two cycles.
+#
 # SYSREG=drcg (kernels whose cmu_csis has samsung,sysreg): the clock driver
 # sets SYSREG_CSIS's DRCG_EN (all ones) and clears MEMCLK at probe, so those
 # two are printed rather than compared with the bootloader's 0 and 1.
@@ -36,12 +41,12 @@ cnt() { echo "$1 enable=$(cat $CLKD/$1/clk_enable_count) prepare=$(cat $CLKD/$1/
 show() {
   echo "genpd csis: $(csis_state)"
   echo "bus: $(cat $dev/power/runtime_status), cmu: $(cat $cmu/power/runtime_status)"
-  echo "tzpc_smc: $(cat $P/tzpc_smc)"
+  [ "$AUTO" = 0 ] && echo "tzpc_smc: $(cat $P/tzpc_smc)"
   cnt gout_csis_csis_pclk
   cnt gout_cmu_csis_bus
 }
 pdlog() { dmesg | grep -E 'Power domain csis|17462400.power-domain|released|1a400000.clock-controller' | tail -"${1:-4}"; }
-failed() { dmesg | grep -cE 'Power domain csis (enable|disable) failed|Power domain csis: kept on' >/dev/null; }
+failed() { dmesg | grep -cE 'Power domain csis (enable|disable) failed|Power domain csis: kept on|Power domain csis: no DTZPC save' >/dev/null; }
 # wait up to 2 s for genpd's csis state to read $1
 wait_state() {
   for _ in $(seq 20); do
@@ -53,7 +58,12 @@ wait_state() {
 }
 nsave() { dmesg | grep -c 'Power domain csis: DTZPC save 0x1a410204: smc returned 0x0'; }
 nrestore() { dmesg | grep -c 'Power domain csis: DTZPC restore 0x1a410204: smc returned 0x0'; }
-done_msg() { echo N > $P/tzpc_smc; echo "tzpc_smc: $(cat $P/tzpc_smc)"; dmesg | grep -iE 'abort|SError' | tail -3; }
+AUTO=0
+[ -e $P/tzpc_smc ] || AUTO=1
+done_msg() {
+  [ "$AUTO" = 0 ] && { echo N > $P/tzpc_smc; echo "tzpc_smc: $(cat $P/tzpc_smc)"; }
+  dmesg | grep -iE 'abort|SError' | tail -3
+}
 
 read_cmu() {
   python3 - "$SYSREG" <<'EOF'
@@ -105,16 +115,25 @@ cmu=/sys/bus/platform/devices/1a400000.clock-controller
 [ "$(basename "$(readlink -f $cmu/driver 2>/dev/null)")" = gs101-cmu ] || { echo "CMU_CSIS has no gs101-cmu driver: stop"; exit 1; }
 [ -d $CLKD/gout_csis_csis_pclk ] || { echo "no gout_csis_csis_pclk clock: stop"; exit 1; }
 pdn=$(find /proc/device-tree/ -name 'power-domain@17462400' | head -1)
-[ -n "$pdn" ] && [ -e "$pdn/google,keep-boot-on" ] && [ -e "$pdn/google,tzpc-smc" ] || { echo "pd_csis lacks google,keep-boot-on or google,tzpc-smc: stop"; exit 1; }
-[ -w $P/tzpc_smc ] && [ -w $P/release_kept ] || { echo "this kernel has no tzpc_smc or release_kept: stop"; exit 1; }
+[ -n "$pdn" ] && [ -e "$pdn/google,tzpc-smc" ] || { echo "pd_csis lacks google,tzpc-smc: stop"; exit 1; }
 failed && { echo "pd_csis failed to switch, or was kept on, this boot: reboot first"; exit 1; }
-dmesg | grep -c '17462400.power-domain: left as the bootloader left it' >/dev/null || { echo "pd_csis wasn't kept on at boot: stop"; exit 1; }
-dmesg | grep -c 'released (release_kept)' >/dev/null && { echo "already released this boot: reboot first"; exit 1; }
-dmesg | grep -cE 'Power domain csis: DTZPC .* smc returned' >/dev/null && { echo "a DTZPC call already ran this boot: reboot first"; exit 1; }
 [ "$(cat $dev/power/control)" = auto ] || { echo "the bus's power/control is not auto: reboot first"; exit 1; }
-[ "$(csis_state)" = on ] || { echo "genpd csis is $(csis_state), not on (kept): stop"; exit 1; }
 [ "$(cat $cmu/power/runtime_status)" = suspended ] || { echo "CMU_CSIS is not runtime-suspended: stop"; exit 1; }
-[ "$(cat $P/tzpc_smc)" = N ] || { echo "tzpc_smc is already on: reboot first"; exit 1; }
+dmesg | grep -cE 'Power domain csis: DTZPC restore' >/dev/null && { echo "a DTZPC restore already ran this boot: reboot first"; exit 1; }
+if [ "$AUTO" = 1 ]; then
+  [ -e "$pdn/google,keep-boot-on" ] && { echo "AUTO, but pd_csis still has google,keep-boot-on: stop"; exit 1; }
+  [ "$(csis_state)" = off-0 ] || { echo "genpd csis is $(csis_state), not off-0 after the boot-time save: stop"; exit 1; }
+  [ "$(nsave)" = 1 ] || { echo "not exactly one clean DTZPC save at boot: stop"; exit 1; }
+  dmesg | grep -cE 'Power domain csis: DTZPC save' | grep -qx 1 || { echo "a DTZPC save failed at boot: stop"; exit 1; }
+else
+  [ -e "$pdn/google,keep-boot-on" ] || { echo "pd_csis lacks google,keep-boot-on: stop"; exit 1; }
+  [ -w $P/tzpc_smc ] && [ -w $P/release_kept ] || { echo "this kernel has no tzpc_smc or release_kept: stop"; exit 1; }
+  dmesg | grep -c '17462400.power-domain: left as the bootloader left it' >/dev/null || { echo "pd_csis wasn't kept on at boot: stop"; exit 1; }
+  dmesg | grep -c 'released (release_kept)' >/dev/null && { echo "already released this boot: reboot first"; exit 1; }
+  dmesg | grep -cE 'Power domain csis: DTZPC .* smc returned' >/dev/null && { echo "a DTZPC call already ran this boot: reboot first"; exit 1; }
+  [ "$(csis_state)" = on ] || { echo "genpd csis is $(csis_state), not on (kept): stop"; exit 1; }
+  [ "$(cat $P/tzpc_smc)" = N ] || { echo "tzpc_smc is already on: reboot first"; exit 1; }
+fi
 if [ "$SYSREG" = drcg ]; then
   [ -e $cmu/of_node/samsung,sysreg ] || { echo "SYSREG=drcg, but cmu_csis has no samsung,sysreg: stop"; exit 1; }
   dmesg | grep -c 'clock-controller@1a400000: Unable to get CMU sysreg' >/dev/null && { echo "CMU_CSIS didn't get its sysreg: stop"; exit 1; }
@@ -123,16 +142,21 @@ echo "bus: ${dev##*/}"
 show
 
 trap done_msg EXIT
-mark "DTZPC calls on (tzpc_smc=Y); releasing the kept pd_csis: the save, then its first power-off, from the bootloader's state"
-echo Y > $P/tzpc_smc
-echo 1 > $P/release_kept
-if ! wait_state off-0; then
-  pdlog 5; show
-  echo "pd_csis did not power off from the bootloader's state: stop"
-  exit 1
+if [ "$AUTO" = 0 ]; then
+  mark "DTZPC calls on (tzpc_smc=Y); releasing the kept pd_csis: the save, then its first power-off, from the bootloader's state"
+  echo Y > $P/tzpc_smc
+  echo 1 > $P/release_kept
+  if ! wait_state off-0; then
+    pdlog 5; show
+    echo "pd_csis did not power off from the bootloader's state: stop"
+    exit 1
+  fi
+  pdlog 3
+  [ "$(nsave)" = 1 ] || { echo "no clean DTZPC save: stop"; exit 1; }
+else
+  mark "pd_csis powered off at boot with the first DTZPC save"
+  pdlog 4
 fi
-pdlog 3
-[ "$(nsave)" = 1 ] || { echo "no clean DTZPC save: stop"; exit 1; }
 
 for cycle in 1 2; do
   mark "cycle $cycle: power/control on: pd_csis on, the DTZPC restore, then CMU_CSIS's runtime resume"
