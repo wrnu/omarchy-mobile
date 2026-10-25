@@ -17,10 +17,16 @@
 # DTZPC save). tzpc_smc is turned off at the end; the PD driver then keeps
 # the domain on rather than power it off without a save.
 #
+# SYSREG=drcg (kernels whose cmu_csis has samsung,sysreg): the clock driver
+# sets SYSREG_CSIS's DRCG_EN (all ones) and clears MEMCLK at probe, so those
+# two are printed rather than compared with the bootloader's 0 and 1.
+#
 # Only software counters are read for the clocks (never clk_summary, which
 # would runtime-resume the CMU). Each register is one 32-bit load through a
 # read-only /dev/mem mapping, only after a clean restore.
 set -u
+SYSREG=${SYSREG:-boot}
+case $SYSREG in boot|drcg) ;; *) echo "SYSREG is boot or drcg"; exit 1 ;; esac
 P=/sys/module/exynos_pm_domains/parameters
 GENPD=/sys/kernel/debug/pm_genpd/pm_genpd_summary
 CLKD=/sys/kernel/debug/clk
@@ -50,7 +56,7 @@ nrestore() { dmesg | grep -c 'Power domain csis: DTZPC restore 0x1a410204: smc r
 done_msg() { echo N > $P/tzpc_smc; echo "tzpc_smc: $(cat $P/tzpc_smc)"; dmesg | grep -iE 'abort|SError' | tail -3; }
 
 read_cmu() {
-  python3 - <<'EOF'
+  python3 - "$SYSREG" <<'EOF'
 import ctypes, os, sys
 # The registers Google's CAL saves (csis_save), with the bootloader's
 # values (RC2.0x): the user mux, the controller option, the BUSP divider,
@@ -61,6 +67,7 @@ for a in range(0x1a403048, 0x1a403114, 4):
 want[0x1a420104] = 0x0
 want[0x1a420108] = 0x1
 assert len(want) == 56
+shown = {0x1a420104, 0x1a420108} if sys.argv[1] == "drcg" else set()
 page = os.sysconf("SC_PAGE_SIZE")
 fd = os.open("/dev/mem", os.O_RDONLY | os.O_SYNC)
 libc = ctypes.CDLL(None, use_errno=True)
@@ -77,10 +84,14 @@ for addr in sorted(want):
             sys.exit("mmap: " + os.strerror(ctypes.get_errno()))
         maps[base] = m
     val = ctypes.c_uint32.from_address(maps[base] + (addr - base)).value
+    if addr in shown:
+        print(f"0x{addr:08x} = 0x{val:08x} (set by the clock driver)", flush=True)
+        continue
     if val != want[addr]:
         bad += 1
         print(f"0x{addr:08x} = 0x{val:08x}, the bootloader's 0x{want[addr]:08x}", flush=True)
-print(f"{56 - bad} of 56 registers equal the bootloader's", flush=True)
+n = 56 - len(shown)
+print(f"{n - bad} of {n} registers equal the bootloader's", flush=True)
 EOF
 }
 
@@ -104,6 +115,10 @@ dmesg | grep -cE 'Power domain csis: DTZPC .* smc returned' >/dev/null && { echo
 [ "$(csis_state)" = on ] || { echo "genpd csis is $(csis_state), not on (kept): stop"; exit 1; }
 [ "$(cat $cmu/power/runtime_status)" = suspended ] || { echo "CMU_CSIS is not runtime-suspended: stop"; exit 1; }
 [ "$(cat $P/tzpc_smc)" = N ] || { echo "tzpc_smc is already on: reboot first"; exit 1; }
+if [ "$SYSREG" = drcg ]; then
+  [ -e $cmu/of_node/samsung,sysreg ] || { echo "SYSREG=drcg, but cmu_csis has no samsung,sysreg: stop"; exit 1; }
+  dmesg | grep -c 'clock-controller@1a400000: Unable to get CMU sysreg' >/dev/null && { echo "CMU_CSIS didn't get its sysreg: stop"; exit 1; }
+fi
 echo "bus: ${dev##*/}"
 show
 
