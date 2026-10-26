@@ -737,6 +737,22 @@ enabled yet), then runtime-suspend, which powers the sensor down again.
   | RC2.3a | `images`, push; `tools/camera-stage --watchdog x --cmd 'LINK=1 DMA=1 FRAMES=4 bash -s' --script tools/camera-cap-test` | as RC2.2a without an overlay's help: colour bars, INT0 bit 3 only | a hang; line errors (the cam clock missing) | push `g3f5d357b540d` with `camera-uw-link1` | medium |
   | RC2.3b | on the phone: `modprobe phy_gs201_mipi_dcphy_rx gs201_csis` with the PMIC held, then `cam -l` and `cam -c1 --capture=10 --file=/tmp/uw-#.ppm` | the IMX386 listed through the simple pipeline; 10 frames through the soft ISP | a hang; no camera listed | a reboot | medium |
 
+- **RC2.4** the camera PMIC powered by the kernel, not `camera-pmic-gpio`.
+  RC2.3's `PU=0` run (`logs/camera-20261025-171803-x.log`, colour
+  bars on link 1 with S2MPG11 GPIO 4 low) showed the ultrawide doesn't
+  need `pu`. Kernel `ff228c850` (binding: an optional `vdd-supply`),
+  `ba663f3c2` (driver: the supply and chip select switched through runtime
+  PM, autosuspend 1 s after the last LDO goes off, a register cache across
+  the reset) and `5adfebfb1` (raven: `bb` and `buck` as chained fixed
+  regulators, 2 ms each, into `vdd`). `tools/camera-cap-test` sees the
+  `vdd-supply` property and skips its GPIO holder.
+
+  | Step | Command | Expect / Pass | Stop if | Rollback | Risk |
+  | --- | --- | --- | --- | --- | --- |
+  | RC2.4a | `images`, push; `tools/phone-ssh 'ls /sys/class/regulator/*/name \| xargs grep -l cam-pmic; grep -E "gpio-(0\|1\|3)" /sys/kernel/debug/gpio'` | boots, taint 0; `cam-pmic-bb` and `cam-pmic-buck` registered; S2MPG11 GPIOs 1 and 3 requested and low | no boot; either GPIO high | push `ga3ad00e61091` | low: two off-by-default regulators |
+  | RC2.4b | `tools/camera-stage --watchdog x --cmd 'LINK=1 DMA=1 FRAMES=4 bash -s' --script tools/camera-cap-test` | the PMIC binds (I2C reads at probe), then `runtime_status` `suspended` within 2 s; IMX386 ID read, colour bars as RC2.3a; after the run GPIOs 0, 1, 3 low | probe fails (an I2C NACK: the chip didn't power up); the chip stays `active` with every LDO off; a hang | a reboot | medium: a new power path for the camera PMIC |
+  | RC2.4c | as RC2.4b with `CAM="-c1 -s width=2016,height=1508 --capture=30"` | libcamera captures as RC2.3c | as RC2.4b | a reboot | medium |
+
 ### Later
 
 RC3: the main GN1 (C-PHY if cheetah's main is any guide: the schedule risk).
@@ -1853,3 +1869,33 @@ the stand-in; make the bring-up permanent (the PMIC's bb, buck and pu lines
 from a driver or package rather than `camera-pmic-gpio`'s Python holder,
 the modules out of the blacklist); then omacam; then the INT bus rate for
 the WDMA under load, and the curated kernel series.
+
+### RC2.4a to RC2.4c on the phone (2026-10-25, `7.3.0-rc6-omamobile-push1-g5adfebfb19c3`): pass, **the kernel powers the camera PMIC**
+
+Offline: checkpatch `--strict` clean on the three commits (apart from the
+binding's own-patch reminder, which it is, and the human's Signed-off-by);
+W=1 clean for `slg51000-regulator.o`; the binding parses.
+
+RC2.4a: boots, taint 0; `cam-pmic-bb` and `cam-pmic-buck` registered and
+disabled, S2MPG11 GPIOs 1 and 3 requested by them and low.
+
+RC2.4b (`logs/camera-20261025-174249-x.log`): no GPIO holder. The PMIC bound,
+four colour-bar frames on link 1, INT0 bit 3 only, GPIOs 1 and 3 low after
+the run. A closer look by hand:
+
+| When | PMIC runtime PM | GPIO 1 (bb) / 3 (buck) |
+| --- | --- | --- |
+| 0.3 s after `modprobe slg51000-regulator` | active | high / high |
+| 3.3 s after | suspended | low / low |
+| after `modprobe imx386` (ID read through the PMIC's LDOs) | suspended | low / low |
+
+All seven LDOs and both converters `disabled` at rest; the IMX386 read model
+`0x0386` through a resume, and the chip went back to reset after it.
+
+RC2.4c (`174356`): `cam -c1 -s width=2016,height=1508 --capture=30`, rc 0,
+AGC at gain 4. Taint 0 throughout.
+
+`tools/camera-pmic-gpio` is now needed only on a kernel without the `vdd`
+supply. Next: an OF match table for `slg51000-regulator` (it has none, so it
+never autoloads from the DT), then the camera modules off the blacklist and
+into `omamobile-device-raven`, so the camera is there at every boot.

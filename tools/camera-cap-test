@@ -63,9 +63,12 @@ say() { echo "cap-test: $*"; echo "cap-test: $*" > /dev/kmsg; }
 # raven (device/raven/CAMERA-PLAN.md, RC2.1-RC2.2): the SLG51000 camera PMIC
 # needs its bb, buck and pu lines from /run/camera-pmic-gpio (as in
 # tools/camera-uw-probe), held for at most 120 s (a dead-man switch), and
-# everything is unloaded and powered down again at exit.
-RAVEN=0
+# everything is unloaded and powered down again at exit. From RC2.4 the DT
+# gives bb and buck to the kernel (the PMIC's vdd supply), and its driver
+# powers the chip while an LDO is on: no holder then.
+RAVEN=0 PMIC_VDD=0
 tr -d '\0' < /sys/firmware/devicetree/base/compatible | grep -c 'google,gs101-raven' >/dev/null && RAVEN=1
+[ -e /sys/firmware/devicetree/base/soc@0/usi@109600c0/i2c@10960000/pmic@75/vdd-supply ] && PMIC_VDD=1
 raven_off() {
 	for m in gs201_csis imx386 slg51000_regulator; do
 		grep -c "^$m " /proc/modules >/dev/null || continue
@@ -75,7 +78,16 @@ raven_off() {
 	[ -n "${holder:-}" ] && kill "$holder" 2>/dev/null && wait "$holder"
 	say "raven: camera PMIC powered down"
 }
-if [ "$RAVEN" = 1 ]; then
+if [ "$RAVEN" = 1 ] && [ "$PMIC_VDD" = 1 ]; then
+	for m in slg51000_regulator imx386 gs201_csis; do
+		grep -c "^$m " /proc/modules >/dev/null && { echo "$m already loaded: reboot first"; exit 1; }
+	done
+	trap raven_off EXIT
+	modprobe slg51000-regulator || { say "modprobe slg51000-regulator failed"; exit 1; }
+	sleep 1
+	ls -d /sys/bus/i2c/drivers/slg51000-regulator/*-0075 >/dev/null 2>&1 || { say "slg51000 not bound"; exit 1; }
+	say "raven: camera PMIC bound, powered by its driver ($(cat /sys/bus/i2c/devices/*-0075/power/runtime_status))"
+elif [ "$RAVEN" = 1 ]; then
 	[ -r /run/camera-pmic-gpio ] || { echo "copy tools/camera-pmic-gpio to /run/camera-pmic-gpio first"; exit 1; }
 	for m in slg51000_regulator imx386 gs201_csis; do
 		grep -c "^$m " /proc/modules >/dev/null && { echo "$m already loaded: reboot first"; exit 1; }
@@ -89,8 +101,13 @@ if [ "$RAVEN" = 1 ]; then
 	modprobe slg51000-regulator || { say "modprobe slg51000-regulator failed"; exit 1; }
 	sleep 1
 	ls -d /sys/bus/i2c/drivers/slg51000-regulator/*-0075 >/dev/null 2>&1 || { say "slg51000 not bound"; exit 1; }
-	kill -USR1 "$holder"; sleep 0.2
-	say "raven: camera PMIC up, pu high"
+	# PU=0: leave pu (S2MPG11 GPIO 4) low, to learn whether anything needs it
+	if [ "${PU:-1}" = 1 ]; then
+		kill -USR1 "$holder"; sleep 0.2
+		say "raven: camera PMIC up, pu high"
+	else
+		say "raven: camera PMIC up, pu left low (PU=0)"
+	fi
 fi
 
 # Modules, in order; gs201_csis gets the step's parameters on every run.
