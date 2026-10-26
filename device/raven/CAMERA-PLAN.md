@@ -1935,3 +1935,6 @@ counter-clockwise by Rotation, so upright needs 270, as on cheetah's
 ultrawide (the same module). Kernel fixup `15ad21d6c`. After the push the
 sensor's `camera_sensor_rotation` reads 270, and the camera loads at boot
 as in RC2.5. Taint 0.
+
+The human then took a photo in omacam: upright and good. **RC2 is done:
+raven's ultrawide works in the camera app.**
