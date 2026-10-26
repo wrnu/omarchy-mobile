@@ -2093,3 +2093,37 @@ Later: the camera at boot (`omamobile-camera-start`), a tuning file, the focus a
 | Step | Command | Expect / pass | Stop | Rollback | Risk |
 | --- | --- | --- | --- | --- | --- |
 | RC4.2b | push `691ed9ac8` (same overlays); then `tools/camera-stage --watchdog x --cmd 'bash -s' --script tools/camera-main-probe` | `cam-pmic-pu` probes off at boot; the ultrawide's camera start as before; "S5KGN1, model 0x08e1" with no help; afterwards LDO1-3 off and GPIO 4 low (`/sys/kernel/debug/gpio`) | a NACK (the order matters: pu before LDO2?); `cam-pmic-pu` on at boot | push `dee78cf3f` | low |
+
+### RC4.2b to RC4.3b on the phone (2026-10-25, `7.3.0-rc6-omamobile-push1-g691ed9ac8a1c`): the sensor works from the kernel, link 0 receives, no image in memory yet
+
+- RC4.2b passes (`logs/camera-20261025-232117-x.log`): `cam-pmic-pu` probes
+  off; "S5KGN1, model 0x08e1" with the kernel alone; LDO1-3 off and GPIO 4
+  low afterwards; taint 0. The stage tool's "not answering" at the end was one
+  failed SSH check: the kernel log runs on and uptime shows no reset.
+- RC4.3, overlay `camera-main-stream` (CSIS link 0): at boot "link 0 -> WDMA
+  context 0, 3 C-PHY trios" beside link 1, 2 media devices, the ultrawide
+  as before. `tools/camera-cap-test` gains a mode for a stack loaded at boot
+  (only the sensor loads; `allow_stream`/`link_only` set through sysfs and
+  put back). Link only, colour bars, 2032x1536 (`232340`): **link 0
+  receives: FS/FE 88 in 5 s, VC 0** (20 fps: the 360 MB/s line cap makes
+  9226-clock lines), C-PHY 3 trios at 1862 Msps. But INT0 b4 (`ERR_OVER`)
+  x44319 besides b3 (`WRONG_CONFIG`, as on the ultrawide and cheetah).
+- RC4.3a, `pixel_mode=3` (octa, `232450`): b3 only, no overflow (as on
+  cheetah, where quad was clean too, at a CAM clock of 533 MHz).
+- RC4.3b, octa with DMA, 4 frames (`232534`): FS/FE 85, WDMA done 1, errors
+  1278 (b14 `LASTDATA` x1278, b15 `LASTADDR` x1261), and the one frame
+  written is all zeros. Octa doesn't reach memory.
+- **The clock.** gs101's CSIS bus is `dout_cmu_csis_bus` from mux parent 5
+  (`dout_cmu_shared2_div2`, 399.36 MHz), so the driver's 533 MHz C-PHY vote
+  gives 399.36 MHz. The mux could give 532.99 (`dout_cmu_shared0_div4`) or
+  663.55 MHz (`fout_shared3_pll`). But stock gs101 puts the CSIS bus in the
+  INT DVFS domain, and Google's source table for INT
+  (`G/drivers/soc/google/cal-if/gs101/cmucal-vclklut.c`, positions 6-7) runs
+  it at about 53-118 MHz [V; ECT may hold other levels, unread]. Our 399.36
+  MHz is already above that, at whatever INT voltage the boot left;
+  533 MHz or more is past anything known: **a decision for the human.**
+- Options, lowest risk first: (1) slow the sensor's link (a data-file
+  variant with a lower output PLL rate, the route cheetah kept in reserve),
+  so quad stops overflowing at 399 MHz; (2) octa with DMA (why the WDMA gets
+  nothing: its line hand-over); (3) the CSIS bus from the 533 MHz parent
+  (human's go: above stock's known levels).

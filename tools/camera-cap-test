@@ -78,7 +78,24 @@ raven_off() {
 	[ -n "${holder:-}" ] && kill "$holder" 2>/dev/null && wait "$holder"
 	say "raven: camera PMIC powered down"
 }
-if [ "$RAVEN" = 1 ] && [ "$PMIC_VDD" = 1 ]; then
+# From RC2.5 omamobile-camera-start loads the stack at boot. Then (RC4.3)
+# only the sensor is loaded here, gs201_csis gets this run's parameters
+# through sysfs, and they go back at exit; the rest stays as the boot left it.
+BOOTED=0
+P=/sys/module/gs201_csis/parameters
+booted_off() {
+	echo "$old_allow" > $P/allow_stream
+	echo "$old_link_only" > $P/link_only
+	say "raven: gs201_csis parameters back as the boot left them"
+}
+if [ "$RAVEN" = 1 ] && [ "$PMIC_VDD" = 1 ] && grep -c '^gs201_csis ' /proc/modules >/dev/null; then
+	BOOTED=1
+	[ -n "$CSIS_OPTS$SENSOR_OPTS" ] || [ "$CH" != "$(cat $P/wdma_channel)" ] &&
+		{ echo "CSIS_OPTS, SENSOR_OPTS and another CH need a stack loaded here: reboot with the camera timer masked"; exit 1; }
+	old_allow=$(cat $P/allow_stream) old_link_only=$(cat $P/link_only)
+	trap booted_off EXIT
+	say "raven: the camera stack is loaded from the boot; loading $MOD only"
+elif [ "$RAVEN" = 1 ] && [ "$PMIC_VDD" = 1 ]; then
 	for m in slg51000_regulator imx386 gs201_csis; do
 		grep -c "^$m " /proc/modules >/dev/null && { echo "$m already loaded: reboot first"; exit 1; }
 	done
@@ -111,6 +128,17 @@ elif [ "$RAVEN" = 1 ]; then
 fi
 
 # Modules, in order; gs201_csis gets the step's parameters on every run.
+if [ "$BOOTED" = 1 ]; then
+	[ "$LENS" = 1 ] && { modprobe "$LENSMOD" || { say "modprobe $LENSMOD failed"; exit 1; }; }
+	modprobe "$MOD" || { say "modprobe $MOD failed"; exit 1; }
+	echo Y > $P/allow_stream
+	if [ "$DMA" = 1 ]; then
+		echo N > $P/link_only
+	else
+		echo Y > $P/link_only
+	fi
+	sleep 2
+else
 modprobe sec_acpm 2>/dev/null
 MODS="gpio_s2mpg13 slg51002_regulator $MOD phy_gs201_mipi_dcphy_rx"
 [ "$RAVEN" = 1 ] && MODS="$MOD phy_gs201_mipi_dcphy_rx"
@@ -131,6 +159,7 @@ else
 	modprobe gs201_csis allow_stream=1 link_only=1 $CSIS_OPTS
 fi
 sleep 2
+fi
 
 MD=
 for d in /dev/media*; do
