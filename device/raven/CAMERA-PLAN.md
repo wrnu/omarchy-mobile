@@ -1926,3 +1926,12 @@ that hid the cameras.
 - Reboot: `omamobile-camera.service` active, "camera drivers loaded; 1
   media devices", no marker left, the PMIC `suspended`, the camera in
   PipeWire. Taint 0.
+
+### RC2.6 on the phone (2026-10-25, `7.3.0-rc6-omamobile-push1-g15ad21d6c8f2`): rotation
+
+The human saw omacam's picture a quarter turn counter-clockwise: the IMX386
+node had no `rotation`, so libcamera reported 0. omacam turns the image
+counter-clockwise by Rotation, so upright needs 270, as on cheetah's
+ultrawide (the same module). Kernel fixup `15ad21d6c`. After the push the
+sensor's `camera_sensor_rotation` reads 270, and the camera loads at boot
+as in RC2.5. Taint 0.
