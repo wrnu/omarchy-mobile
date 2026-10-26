@@ -14,7 +14,20 @@
 # 0x08e1). It writes no sensor register at probe. With the ID read it powers
 # the sensor down again (runtime PM), so LDO2 and LDO3 read off afterwards.
 # The driver stays loaded; it holds nothing while suspended.
+#
+# PU=1 (RC4.2a) first raises the camera PMIC's pu line (S2MPG11 GPIO 4),
+# which stock raises 1 ms after chip select and our kernel never does. pu
+# goes high only while the PMIC is on, so the ultrawide is held powered
+# (power/control on: LDO1, so bb, buck and chip select) around it; then
+# the reverse: s5kgn1 suspends, pu low, the ultrawide back to auto. Copy
+# the GPIO tool first:
+#
+#   tools/phone-ssh 'cat > /run/camera-pmic-gpio' < tools/camera-pmic-gpio
+#
+# PU=hold does the same with pu taken but left low: the control for PU=1.
 set -u
+PU=${PU:-0}
+G=/run/camera-pmic-gpio
 FW=omamobile/camera/s5kgn1-main.bin
 DT=/sys/firmware/devicetree/base
 mark() { echo "camera-main-probe: $*" > /dev/kmsg; echo "== $*"; }
@@ -30,11 +43,44 @@ mclk() { grep -E ' dout_cmu_cis_clk3 ' /sys/kernel/debug/clk/clk_summary | awk '
 
 okay soc@0/usi@109000c0/i2c@10900000/camera-sensor@3d || { echo "camera-main-test is not in the running DTB"; exit 1; }
 loaded slg51000_regulator || { echo "the camera PMIC isn't loaded: wait for omamobile-camera-start"; exit 1; }
-loaded s5kgn1 && { echo "s5kgn1 already loaded: reboot first"; exit 1; }
+if loaded s5kgn1; then
+  ls -d /sys/bus/i2c/drivers/s5kgn1/*-003d >/dev/null 2>&1 && { echo "s5kgn1 is bound: reboot first"; exit 1; }
+  rmmod s5kgn1 || exit 1    # loaded after a failed probe, holding nothing
+fi
 ls /usr/lib/firmware/updates/$FW /usr/lib/firmware/$FW 2>/dev/null | head -1 | grep -c . >/dev/null ||
   { echo "no $FW: install the file tools/extract-camera-data wrote"; exit 1; }
 ldos
 mclk
+
+uw=
+pu=
+undo() {
+  [ -n "$pu" ] && { kill "$pu" 2>/dev/null; wait "$pu"; mark "pu low"; }
+  [ -n "$uw" ] && { echo auto > "$uw/power/control"; mark "ultrawide back to auto"; }
+  sleep 1
+  ldos
+}
+trap undo EXIT
+if [ "$PU" = 1 ] || [ "$PU" = hold ]; then
+  [ -r $G ] || { echo "copy tools/camera-pmic-gpio to $G first"; exit 1; }
+  uw=$(echo /sys/bus/i2c/drivers/imx386/*-001a)
+  [ -e "$uw" ] || { uw=; echo "the ultrawide isn't bound: it holds the PMIC on here"; exit 1; }
+  mark "holding the ultrawide powered (LDO1: the PMIC on)"
+  echo on > "$uw/power/control"
+  sleep 0.5
+  ldos
+  python3 $G pu --max 30 &
+  pu=$!
+  sleep 0.5
+  kill -0 "$pu" 2>/dev/null || { pu=; echo "pu not taken"; exit 1; }
+  if [ "$PU" = 1 ]; then
+    kill -USR1 "$pu"
+    sleep 0.2
+    mark "pu high"
+  else
+    mark "pu held low (the control)"
+  fi
+fi
 
 mark "loading s5kgn1 (LDO1, LDO2, LDO3, reset, 1 ms, MCLK, 9 ms, chip ID)"
 modprobe s5kgn1; echo "modprobe-exit=$?"

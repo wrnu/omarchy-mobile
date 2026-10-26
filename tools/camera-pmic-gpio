@@ -25,6 +25,15 @@ hold --pu also takes pu (GPIO 4), driven low, and raises it on SIGUSR1:
 Google's driver raises pu last, 1 ms after chip select and the PMIC's
 setup, and keeps it high while the PMIC is on. Powering down then lowers
 pu first, 1 ms, then chip select, 10 ms, buck, 1 ms, bb (Google's order).
+pu alone (CAMERA-PLAN RC4.2a), for kernels whose regulators own bb, buck
+and chip select: take GPIO 4 low, raise it on SIGUSR1 (only while the
+PMIC is on: hold one of its LDOs first) and lower it on SIGTERM, SIGINT
+or after --max seconds.
+
+    python3 /run/camera-pmic-gpio pu --max 30 &
+    kill -USR1 %1                                   # pu high, 1 ms
+    kill %1                                         # pu low, 1 ms
+
 GPIO 2 (the telephoto supply) is never requested.
 """
 import argparse
@@ -186,6 +195,30 @@ def hold(chip, max_s, with_pu):
         os.unlink(PIDFILE)
 
 
+def pu_only(chip, max_s):
+    fd = request(chip, [PU], "camera-pmic-pu")  # low first
+    stop, up = [], []
+    signal.signal(signal.SIGTERM, lambda *_: stop.append(1))
+    signal.signal(signal.SIGINT, lambda *_: stop.append(1))
+    signal.signal(signal.SIGUSR1, lambda *_: up.append(1))
+    high = False
+    try:
+        log(f"pu taken, low; holding for at most {max_s} s")
+        end = time.monotonic() + max_s
+        while not stop and time.monotonic() < end:
+            if up and not high:
+                set_line(fd, 0, 1)
+                time.sleep(0.001)
+                high = True
+                log("pu high")
+            time.sleep(0.01)
+        log("timeout: pu low" if not stop else "stop: pu low")
+        set_line(fd, 0, 0)
+        time.sleep(0.001)
+    finally:
+        os.close(fd)
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -194,6 +227,9 @@ def main():
                    help=f"seconds before powering down by itself (at most {MAX_HOLD})")
     h.add_argument("--pu", action="store_true",
                    help="also take pu (GPIO 4), low; SIGUSR1 raises it")
+    u = sub.add_parser("pu", help="pu (GPIO 4) alone: low, SIGUSR1 raises it")
+    u.add_argument("--max", type=int, default=30,
+                   help=f"seconds before lowering it by itself (at most {MAX_HOLD})")
     sub.add_parser("cs-low", help="drive chip select low (after rmmod)")
     args = p.parse_args()
     chip, path = find_chip()
@@ -201,6 +237,10 @@ def main():
         if not 1 <= args.max <= MAX_HOLD:
             sys.exit(f"--max must be 1..{MAX_HOLD}")
         hold(chip, args.max, args.pu)
+    elif args.cmd == "pu":
+        if not 1 <= args.max <= MAX_HOLD:
+            sys.exit(f"--max must be 1..{MAX_HOLD}")
+        pu_only(chip, args.max)
     else:
         cs_low(chip)
 

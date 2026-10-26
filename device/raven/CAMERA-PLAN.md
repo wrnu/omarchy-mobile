@@ -2062,3 +2062,34 @@ matrices stay the IMX519's.
 | RC4.3 | the CSIS link 0 overlay and a 5 s colour-bar stream under `camera-cap-test`, link register 0x700 read once | FS/FE counting on link 0; 0x700 reads 0 | 0x700 0xe2/0xf2 and no frames: the link guess is wrong; try link 2's C-PHY (two trios) next, one boot each | as RC4.2 | medium |
 
 Later: the camera at boot (`omamobile-camera-start`), a tuning file, the focus actuator (`ak7377`), and the OIS controller's EEPROM.
+
+### RC4.1 to RC4.2a on the phone (2026-10-25, `7.3.0-rc6-omamobile-push1-gdee78cf3ff9b`): **the main camera answers, with the PMIC's pull-up line**
+
+- RC4.1 passes: boots; `0-003d` exists with no driver, `s5kgn1` not loaded;
+  the ultrawide's camera start as before; taint 0.
+- RC4.2 stops (`logs/camera-20261025-225622-x.log`): LDO1-3 on in order, then
+  `Error reading reg 0x0000: -6`, "chip ID read failed": the address NACKs.
+  Everything powered down again (LDOs off, `dout_cmu_cis_clk3` off), no oops.
+  The clock path is the ultrawide's (`mout`/`gout`/`dout_cmu_cis_clk3`, 24.576
+  MHz), and the bus controller works (a NACK, not a timeout).
+- The difference from stock: Google's SLG51000 driver raises `pu` (S2MPG11
+  GPIO 4) 1 ms after chip select and lowers it first
+  (`G/drivers/mfd/slg51000-core.c`, `slg51000_power_on`/`_off`); our kernel
+  describes only bb, buck and chip select. `tools/camera-pmic-gpio pu` takes
+  GPIO 4 alone through the GPIO character device, and `tools/camera-main-probe`
+  holds the ultrawide powered (`power/control` `on`: LDO1, so the PMIC is on)
+  around it.
+- RC4.2a, `PU=1` (`225901`): **"S5KGN1, model 0x08e1"**, bound and
+  runtime-suspended; LDO2 and LDO3 off afterwards, then pu low and all three
+  LDOs off. Control, `PU=hold` (`225955`, the same hold with pu low): NACK
+  again. So the pull-up line, not LDO1's timing, is what the sensor needs.
+  The ultrawide never needed it.
+- Kernel `691ed9ac8` (the RC4.0 commit amended): `cam_pmic_pu`, a
+  `regulator-fixed` on S2MPG11 GPIO 4 with a 1 ms start-up delay, as the GN1's
+  `vsw-supply`. The driver enables `vsw` after LDO1 and LDO2 (so with the PMIC
+  on) and disables it before them, which keeps stock's order: pu last on,
+  first off. No binding change (`vsw` is the GN1's optional switched supply).
+
+| Step | Command | Expect / pass | Stop | Rollback | Risk |
+| --- | --- | --- | --- | --- | --- |
+| RC4.2b | push `691ed9ac8` (same overlays); then `tools/camera-stage --watchdog x --cmd 'bash -s' --script tools/camera-main-probe` | `cam-pmic-pu` probes off at boot; the ultrawide's camera start as before; "S5KGN1, model 0x08e1" with no help; afterwards LDO1-3 off and GPIO 4 low (`/sys/kernel/debug/gpio`) | a NACK (the order matters: pu before LDO2?); `cam-pmic-pu` on at boot | push `dee78cf3f` | low |
