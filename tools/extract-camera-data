@@ -452,11 +452,12 @@ GN1_CHIP_ID = 0x08E1
 GN1_MODEL_ID_FN = bytes.fromhex("5f2403d5") + struct.pack("<I", 0x52800000 | GN1_CHIP_ID << 5) \
     + bytes.fromhex("c0035fd6")
 # The driver's virtual table, relative to its model-ID slot [HAL layout]:
-# the init list selector and the mode list selector. Both pick a variant by
-# debug flags in the driver object; with the flags clear they return the
-# defaults.
-GN1_SLOT_INIT = -1
-GN1_SLOT_MODES = -4
+# the init list selector and, three slots before it, the mode list
+# selector. Both pick a variant by debug flags in the driver object; with
+# the flags clear they return the defaults. The init selector is the slot
+# just before the model ID in cheetah's HAL and two before it in raven's.
+GN1_SLOTS_INIT = (-1, -2)
+GN1_SLOT_MODES_FROM_INIT = -3
 GN1_THIS_SIZE = 0x4000
 GN1_BAYER = 1           # GRBG [I: CAM-M checks it with the solid colour pattern]
 GN1_AGAIN = (0x20, 0x200)
@@ -548,18 +549,23 @@ def build_gn1(hal):
 
     this = emu._alloc(GN1_THIS_SIZE)
     emu.uc.mem_write(this, bytes(GN1_THIS_SIZE))
-    found = []
-    for vt in tables:
-        init_fn = emu.u64(vt + 8 * GN1_SLOT_INIT)
-        modes_fn = emu.u64(vt + 8 * GN1_SLOT_MODES)
+    found, done = [], set()
+    for vt, slot in ((vt, slot) for vt in tables for slot in GN1_SLOTS_INIT):
+        if vt in done:
+            continue
+        init_fn = emu.u64(vt + 8 * slot)
+        modes_fn = emu.u64(vt + 8 * (slot + GN1_SLOT_MODES_FROM_INIT))
         try:
             ptr = emu.call(init_fn, this)
             count = emu.uc.reg_read(A.UC_ARM64_REG_X1)
             init = read_regs16(emu, ptr, ptr + 16 * count) if 0 < count < 20000 else None
-            mptr = emu.call(modes_fn, this)
         except unicorn.UcError:
             continue
         if not init or 0x0136 not in dict(init):
+            continue
+        try:
+            mptr = emu.call(modes_fn, this)
+        except unicorn.UcError:
             continue
         # The mode selector returns the records' begin; its vector's end is
         # the next word of the static vector it read. Find that vector.
@@ -573,6 +579,7 @@ def build_gn1(hal):
                         break
         if modes:
             found.append((init, modes))
+            done.add(vt)
     if not found:
         die("S5KGN1 init and mode lists not found")
     # The phone's own driver is the one whose init list sets C-PHY lanes

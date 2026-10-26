@@ -2021,3 +2021,44 @@ Left: the human's judgement of a photo; using the white-balance records (the
 module's R/G and B/G under three lights could anchor the AWB colour
 temperature curve, once the lights' temperatures are known); the colour
 matrices stay the IMX519's.
+
+## RC4: the main camera (S5KGN1)
+
+### RC4.0 offline (2026-10-25): the mode file, the node, the blacklist
+
+- **Mode file.** `tools/extract-camera-data --apex … --sensor s5kgn1` failed
+  on raven's HAL (`42ab61e0…`): its GN1 virtual table has the init list
+  selector two slots before the model-ID function, where cheetah's has it one
+  before (the mode selector is three before the init selector in both). The
+  tool now tries both and keeps the first per table. Raven's HAL has
+  cheetah's init list size (1565 writes, `0x0114` = `0x0201`: three C-PHY
+  trios) and the same four modes: 4080x3072 at 30 fps, 4080x2288 at 60,
+  2016x1136 at 120 and 2032x1536 at 60. The file stays off the repository
+  (`~/android/reference/raven-camera/s5kgn1-main.bin`) and is installed as
+  `/usr/lib/firmware/updates/omamobile/camera/s5kgn1-main.bin`.
+- **The link.** Raven's `gs201-dcphy.bin` has a C-PHY section (3 rates,
+  1-2147 Msps), and the GN1's 1862 Msps is inside it. Three trios need a
+  four-lane slave (links 0 and 1); the ultrawide holds link 1, so the
+  endpoint goes to link 0 [I]. RC4.3 checks it with link register 0x700.
+- **Kernel `dee78cf3f`** (on `omamobile-gs101-camera-v1`): `hsi2c_1` with
+  stock's SoC pull-ups (400 kHz for bring-up; stock runs 1 MHz), the GN1 at
+  0x3d with `vio` = LDO1, `vaux` = LDO2, `vdig` = `vana` = LDO3 (3.05, 3.05
+  and 2.85 V, read on the phone: the module makes its own rails, so the names
+  follow the driver's power order), `samsung,power-delays-us = <1000 1000
+  1000 9000>` for stock's waits, reset gpp2-2, MCLK `CIS_CLK3` on gpp9-0 at
+  24.576 MHz, `rotation` 90 as cheetah's (not seen on raven yet); the C-PHY
+  endpoint to `csis0`. Disabled. `checkpatch --strict`: only the missing
+  Signed-off-by; `dt-validate` (dtschema on the laptop) has nothing on the
+  new nodes, also with them enabled.
+- **`omamobile-device-raven` 0.1.25** blacklists `s5kgn1`; installed on the
+  phone before any DTB enables the node.
+- Overlay `camera-main-test` enables USI1, `hsi2c_1` and the sensor; the
+  CSIS link stays off.
+
+| Step | Command | Expect / pass | Stop | Rollback | Risk |
+| --- | --- | --- | --- | --- | --- |
+| RC4.1 | `images` with `camera-main-test` (kernel `dee78cf3f`), push; then `tools/phone-ssh 'uname -r; lsmod \| grep -c s5kgn1; ls /sys/bus/i2c/devices/ \| grep 003d; journalctl -b -u omamobile-camera \| tail -3'` | boots; `s5kgn1` not loaded (0); an `N-003d` device with no driver; the ultrawide's camera start as before | no boot; `s5kgn1` loaded (the blacklist missed) | push without `camera-main-test` | low: a disabled-driver node and an idle I2C bus |
+| RC4.2 | `tools/camera-stage --watchdog x --cmd 'bash -s' --script tools/camera-main-probe` | "S5KGN1, model 0x08e1"; bound, `runtime_status: suspended`; LDO2 and LDO3 off afterwards (LDO1 as before), `dout_cmu_cis_clk3` disabled at 24576000 | a chip ID read failure (`-ENXIO`/timeout: suspect S2MPG11 GPIO 4, the PMIC's pull-up line, which the kernel doesn't raise; record and stop); a wrong ID; an LDO left on; any oops | reboot (the driver doesn't load at boot) | medium: the first power-up of the main module |
+| RC4.3 | the CSIS link 0 overlay and a 5 s colour-bar stream under `camera-cap-test`, link register 0x700 read once | FS/FE counting on link 0; 0x700 reads 0 | 0x700 0xe2/0xf2 and no frames: the link guess is wrong; try link 2's C-PHY (two trios) next, one boot each | as RC4.2 | medium |
+
+Later: the camera at boot (`omamobile-camera-start`), a tuning file, the focus actuator (`ak7377`), and the OIS controller's EEPROM.

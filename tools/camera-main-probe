@@ -1,0 +1,52 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT
+#
+# camera-main-probe: power raven's main camera (S5KGN1) and read its chip
+# ID (device/raven/CAMERA-PLAN.md, RC4.2), on the phone. Run it under the
+# laptop's log stream and the watchdog:
+#
+#   tools/camera-stage --watchdog x --cmd 'bash -s' --script tools/camera-main-probe
+#
+# omamobile-camera-start has already loaded the camera PMIC at boot (the
+# kernel powers it with its LDOs). This loads s5kgn1, which loads its mode
+# file and does stock's sequence itself: LDO1, LDO2, LDO3 1 ms apart, reset
+# released, 1 ms, MCLK, 9 ms, then reads the chip ID at 0x0000 (expect
+# 0x08e1). It writes no sensor register at probe. With the ID read it powers
+# the sensor down again (runtime PM), so LDO2 and LDO3 read off afterwards.
+# The driver stays loaded; it holds nothing while suspended.
+set -u
+FW=omamobile/camera/s5kgn1-main.bin
+DT=/sys/firmware/devicetree/base
+mark() { echo "camera-main-probe: $*" > /dev/kmsg; echo "== $*"; }
+loaded() { grep -c "^$1 " /proc/modules >/dev/null; }
+okay() { tr -d '\0' < "$DT/$1/status" 2>/dev/null | grep -c okay >/dev/null; }
+ldos() {
+  for r in /sys/class/regulator/regulator.*; do
+    n=$(cat $r/name 2>/dev/null)
+    case $n in cam_ldo[123]) printf '%s state=%s microvolts=%s users=%s\n' "$n" "$(cat $r/state)" "$(cat $r/microvolts 2>/dev/null)" "$(cat $r/num_users)" ;; esac
+  done
+}
+mclk() { grep -E ' dout_cmu_cis_clk3 ' /sys/kernel/debug/clk/clk_summary | awk '{print "dout_cmu_cis_clk3 enable=" $2 " prepare=" $3 " rate=" $5}'; }
+
+okay soc@0/usi@109000c0/i2c@10900000/camera-sensor@3d || { echo "camera-main-test is not in the running DTB"; exit 1; }
+loaded slg51000_regulator || { echo "the camera PMIC isn't loaded: wait for omamobile-camera-start"; exit 1; }
+loaded s5kgn1 && { echo "s5kgn1 already loaded: reboot first"; exit 1; }
+ls /usr/lib/firmware/updates/$FW /usr/lib/firmware/$FW 2>/dev/null | head -1 | grep -c . >/dev/null ||
+  { echo "no $FW: install the file tools/extract-camera-data wrote"; exit 1; }
+ldos
+mclk
+
+mark "loading s5kgn1 (LDO1, LDO2, LDO3, reset, 1 ms, MCLK, 9 ms, chip ID)"
+modprobe s5kgn1; echo "modprobe-exit=$?"
+sleep 1
+dmesg | grep -iE 's5kgn1|-003d' | tail -10
+s=$(echo /sys/bus/i2c/drivers/s5kgn1/*-003d)
+if [ -e "$s" ]; then
+  echo "bound: ${s##*/} runtime_status=$(cat $s/power/runtime_status)"
+else
+  echo "s5kgn1 NOT bound"
+fi
+sleep 2
+ldos
+mclk
+mark "done"

@@ -66,7 +66,7 @@ done
   || fail "the USB rescue unit is enabled by a vendor wants link"
 [[ $(readlink "$tmp/root/usr/lib/systemd/system/timers.target.wants/omamobile-camera.timer") == ../omamobile-camera.timer ]] \
   || fail "the camera timer is enabled by a vendor wants link"
-for m in slg51000_regulator imx386 phy_gs201_mipi_dcphy_rx gs201_csis; do
+for m in slg51000_regulator imx386 s5kgn1 phy_gs201_mipi_dcphy_rx gs201_csis; do
   grep -qx "blacklist $m" "$tmp/root/usr/lib/modprobe.d/omamobile-camera.conf" || fail "$m is blacklisted for autoload"
 done
 grep -c 'load slg51000_regulator$' bin/omamobile-camera-start >/dev/null || fail "the camera start loads the PMIC first"
