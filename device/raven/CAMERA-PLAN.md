@@ -1938,3 +1938,33 @@ as in RC2.5. Taint 0.
 
 The human then took a photo in omacam: upright and good. **RC2 is done:
 raven's ultrawide works in the camera app.**
+
+### RC2.7 on the phone (2026-10-25, `7.3.0-rc6-omamobile-push1-g01aee004d37f`): pass, the curated series
+
+The 43 bring-up commits on `omamobile-gs101-camera` are curated into 26 on
+`omamobile-gs101-camera-v1` (worktree `$WORK/mainline/wt-raven-camera-v1`,
+output `$WORK/mainline/out-raven-camera-v1`), with no Signed-off-by yet:
+
+- the fixups squashed; the raven commit names link 1, with the evidence
+  (links 0, 2, 4 and 6 saw nothing); the sensor commit carries the rotation;
+- the eleven power-domain bring-up commits are two: the 10 ms wait for gs101
+  domains, and the DTZPC save and restore from `samsung,dtzpc` (André
+  Draszik's design), which refuses a power-on until a save of the powered
+  block has been made. That guard and the probe-time save now live in one
+  place, without "bring-up" wording; the behaviour is unchanged;
+- the "no clocks" comment in `gs101.dtsi` is back above `sysreg_csis`; it had
+  ended up above the DTZPC node.
+
+The tree equals `omamobile-gs101-camera` apart from those two cleanups.
+`checkpatch --strict` passes on every commit; its one CHECK is the
+`SET_NOIRQ_SYSTEM_SLEEP_PM_OPS` alignment that exynos5433's identical code also
+gets.
+
+On the phone: the camera loads from its timer, `cam -c1 --capture=30` gives 30
+frames at 21 fps, and afterwards `pd_csis` is off, CMU_CSIS and the link are
+suspended, the PMIC is suspended, there are no power-domain or SMC errors, and
+taint is 0.
+
+Still in raven's overlays, not the kernel DT: `pd_csis`'s `samsung,dtzpc` and
+`cmu_csis`'s `status` (camera-csis-cmu-test). Moving them into `gs101.dtsi`
+changes every gs101 board (oriole too), so it is a step of its own.
