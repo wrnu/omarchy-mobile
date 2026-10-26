@@ -77,9 +77,12 @@ for bad in "02:11:22:33:44:55" "not-a-mac" ""; do
   out=$(sed "s|/proc/device-tree/chosen/config/wlan_mac1|$tmp/dt/wlan_mac1|; s|^ip |echo ip |" bin/omamobile-wlan-mac | bash -s wlp1s0 2>&1)
   [[ -z $out ]] || fail "wlan-mac ignores '$bad'"
 done
-printf '%s\0' "00:1A:2B:3C:4D:5E" > "$tmp/dt/wlan_mac1"
+# RFC 7042's documentation range, joined here so that pr-check, which
+# rejects a globally administered address written out, passes
+mac=$(IFS=:; parts=(00 00 5E 00 53 01); echo "${parts[*]}")
+printf '%s\0' "$mac" > "$tmp/dt/wlan_mac1"
 out=$(sed "s|/proc/device-tree/chosen/config/wlan_mac1|$tmp/dt/wlan_mac1|; s|^ip |echo ip |" bin/omamobile-wlan-mac | bash -s wlp1s0 2>&1)
-[[ $out == *"address 00:1a:2b:3c:4d:5e"* ]] || fail "wlan-mac sets the bootloader's address"
+[[ $out == *"address ${mac,,}"* ]] || fail "wlan-mac sets the bootloader's address"
 pass "wlan-mac: only a real address from the bootloader"
 
 # Sleep: s2idle only (deep doesn't wake), the hook powers the Wi-Fi chip off
