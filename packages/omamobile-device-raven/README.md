@@ -18,6 +18,7 @@ the counterpart of `omamobile-device-cheetah`. Bring-up and results:
 | Modem bring-up only: its PCIe driver and CPIF never load at boot | `modprobe.d/omamobile-raven-modem.conf` |
 | Bluetooth on at boot; the session waits (at most 15 s) for the adapter | `bluetooth.service` (enabled), `sddm.service.d/`, `omamobile-wait-bluetooth` |
 | The ultrawide camera, loaded 40 s into the boot after a hang guard (the next boot skips it if a load never finished; `--retry` tries again); the camera modules blacklisted for autoload; the DMA-BUF heaps for the video group and the seat's user (libcamera's software ISP); the camera named for apps and the raw CSIS nodes kept out of PipeWire | `omamobile-camera-start` (+ `omamobile-camera.service`, `.timer`, enabled), `modprobe.d/omamobile-camera.conf`, `udev/rules.d/70-omamobile-dma-heap.rules`, `wireplumber/50-omamobile-cameras.conf` |
+| Lens shading for the ultrawide from its own module's factory flat field (the module EEPROM, read-only through at24): checked against its checksums, fitted to the software ISP's radial model (colour fully, brightness 80 %), written to `/etc/libcamera/ipa/simple/imx386.yaml` before the camera appears; the numbers stay on the phone | `omamobile-camera-calibrate` (run by `omamobile-camera-start`) |
 
 `reboot-to.c` and `omamobile-bootctl.c` are cheetah's, unchanged: both are
 the same on every gs101/gs201 Pixel (raven's `devinfo` is `DEVI` 3.15, as

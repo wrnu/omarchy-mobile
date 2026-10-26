@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: MIT
+/*
+ * Bring-up only (CAMERA-PLAN.md, RC3.1): the ultrawide module's EEPROM
+ * (kernel bdb2225f3, disabled there), read-only through at24 with LDO1 as
+ * its supply. at24 is already loaded for the board's other EEPROM; this one
+ * probes once the camera PMIC's LDO1 exists, which omamobile-camera-start
+ * loads. Needs camera-uw-test (the bus).
+ */
+/dts-v1/;
+/plugin/;
+
+&{/soc@0/usi@109200c0/i2c@10920000/eeprom@50} {
+	status = "okay";
+};

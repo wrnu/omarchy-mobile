@@ -1968,3 +1968,56 @@ taint is 0.
 Still in raven's overlays, not the kernel DT: `pd_csis`'s `samsung,dtzpc` and
 `cmu_csis`'s `status` (camera-csis-cmu-test). Moving them into `gs101.dtsi`
 changes every gs101 board (oriole too), so it is a step of its own.
+
+## RC3: colour and shading from the module's own factory data
+
+No calibrated IMX386 tuning exists that we may use: libcamera has none, ours
+borrows the IMX519's matrices (`imx386.yaml` in our libcamera package), and
+Google's HAL tuning is Google's data (cheetah CAMERA-PLAN §1.6). The ultrawide
+module's own EEPROM, an ST M24C64 at 0x50 on the sensor's bus, holds this
+module's factory calibration. Reading it is read-only (repeated-start reads, and
+then at24 with `read-only`); the contents are unique to the phone and stay in
+`~/android/reference/raven-camera/` and on the phone, never in the repo.
+
+### RC3.0 on the phone (2026-10-25, `7.3.0-rc6-omamobile-push1-g01aee004d37f`): the layout
+
+With the sensor held on (`power/control` `on`, which powers LDO1), 64 reads of
+128 bytes with i2c-tools gave the 8 KiB; the first 32 bytes equal RC1.3's.
+Used: 0x000-0x80f, plus smaller blocks at 0x13e0-0x17bf (not decoded yet).
+Decoded, all big-endian 16-bit:
+
+| Offset | What |
+| --- | --- |
+| 0x032, 0x05e, 0x08a | three white-balance records of 21 words and a checksum word (the byte sum of the 42 bytes before it). Each holds three groups of seven: R, Gr, Gb, B averages, R/G and B/G × 1024, one more value. The three groups' ratios sit where daylight, cool-white fluorescent and tungsten would [I]; the ratios match the first record's own averages exactly, so that record is likely the golden module's [I] |
+| 0x0b8 | four 17 × 13 grids (R, Gr, Gb, B), edge to edge of the 4:3 active area [I], each peaking at its centre cell: a factory flat field. The corners get about a fifth of the centre's light, red a little less than green and blue, so uncorrected corners are dark and cyan |
+| 0x7a0 | the grids' checksum (byte sum of the 1768 bytes) |
+
+Both checksum kinds verify on this module.
+
+### RC3.1 on the phone (2026-10-25, `7.3.0-rc6-omamobile-push1-gbdb2225f3931`): pass, the EEPROM through at24 and lens shading at every boot
+
+- Kernel `bdb2225f3` describes the EEPROM (`st,24c64`, `read-only`,
+  `vcc-supply = <&cam_ldo1>`, disabled); overlay `camera-uw-eeprom` enables it.
+  at24 was already loaded for the board's other EEPROM. At boot its probe
+  defers until LDO1 exists, then "8192 byte 24c64 EEPROM, read-only"
+  (`nvmem` mode 0400); runtime-suspended afterwards, with the PMIC. The sysfs
+  read is byte for byte RC3.0's dump.
+- `omamobile-device-raven` 0.1.24: `omamobile-camera-calibrate` checks both
+  checksum kinds and the grid's shape, fits the software ISP's radial model
+  (`1 + k1 r^2 + k2 r^4` per colour) to the grid, correcting colour fully and
+  brightness by 0.8 (corner gain about 3.6 instead of 5, so the corners keep a
+  little falloff and less noise), and writes the package's tuning with that
+  `LensShading` to `/etc/libcamera/ipa/simple/imx386.yaml`, which libcamera
+  reads before `/usr/share`. `omamobile-camera-start` runs it after the PMIC
+  and before the camera drivers, as libcamera (and PipeWire) read the tuning
+  when the camera appears. The model fits the grid within about 12 % at its
+  worst cell (an off-centre optical axis [I]).
+- Reboot with the file removed: at24 at 40.16 s, the file written, the CSIS
+  link at 40.56 s; `cam` logs "Using tuning file
+  /etc/libcamera/ipa/simple/imx386.yaml". Corners in a room scene went from
+  about 0.8-0.9 of the centre to 0.9-1.0. Taint 0.
+
+Left: the human's judgement of a photo; using the white-balance records (the
+module's R/G and B/G under three lights could anchor the AWB colour
+temperature curve, once the lights' temperatures are known); the colour
+matrices stay the IMX519's.

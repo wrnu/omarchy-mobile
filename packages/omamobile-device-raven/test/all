@@ -7,7 +7,13 @@ fail() { printf 'not ok - %s\n' "$1" >&2; exit 1; }
 pass() { printf 'ok - %s\n' "$1"; }
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 
-for script in bin/*; do bash -n "$script" || fail "$script parses"; done
+for script in bin/*; do
+  if head -1 "$script" | grep -c python >/dev/null; then
+    python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read())' "$script" || fail "$script parses"
+  else
+    bash -n "$script" || fail "$script parses"
+  fi
+done
 pass "scripts parse"
 
 ./build "$tmp/build" || fail "C tools compile"
@@ -64,12 +70,43 @@ for m in slg51000_regulator imx386 phy_gs201_mipi_dcphy_rx gs201_csis; do
   grep -qx "blacklist $m" "$tmp/root/usr/lib/modprobe.d/omamobile-camera.conf" || fail "$m is blacklisted for autoload"
 done
 grep -c 'load slg51000_regulator$' bin/omamobile-camera-start >/dev/null || fail "the camera start loads the PMIC first"
+[[ $(grep -n -m1 'omamobile-camera-calibrate ||' bin/omamobile-camera-start | cut -d: -f1) -lt $(grep -n -m1 '^load imx386' bin/omamobile-camera-start | cut -d: -f1) ]] \
+  || fail "the calibration is written before the camera appears"
 pass "the camera loads from its timer, PMIC first, and nothing autoloads"
 [[ $(readlink "$tmp/root/usr/lib/systemd/system-sleep/omamobile") == /usr/bin/omamobile-sleep ]] \
   || fail "the sleep hook is linked into system-sleep"
 [[ $(readlink "$tmp/root/usr/lib/systemd/user/graphical-session.target.wants/omamobile-sleepd.service") == ../omamobile-sleepd.service ]] \
   || fail "the sleep watcher is enabled by a vendor wants link"
 pass "install stages the package"
+
+# omamobile-camera-calibrate: lens shading from a made-up module EEPROM (the
+# real one is per phone and never committed); a bad checksum changes nothing
+python3 - "$tmp/eeprom.bin" <<'PY'
+import struct, sys
+data = bytearray(b"\xff" * 8192)
+for at in (0x32, 0x5E, 0x8A):
+    data[at:at + 42] = struct.pack(">21H", *([400, 800, 800, 500, 480, 640, 800] * 3))
+    struct.pack_into(">H", data, at + 42, sum(data[at:at + 42]) & 0xFFFF)
+grid = []
+for c, fall in enumerate((3.0, 2.5, 2.5, 2.4)):
+    for j in range(13):
+        for i in range(17):
+            r2 = (((i / 16 - 0.5) * 4) ** 2 + ((j / 12 - 0.5) * 3) ** 2) / 6.25
+            grid.append(round(800 / (1 + fall * r2)))
+data[0xB8:0xB8 + 1768] = struct.pack(">884H", *grid)
+struct.pack_into(">H", data, 0xB8 + 1768, sum(data[0xB8:0xB8 + 1768]) & 0xFFFF)
+open(sys.argv[1], "wb").write(data)
+PY
+printf '%s\n' 'algorithms:' '  - Awb:' '  - Agc:' > "$tmp/base.yaml"
+out=$(bin/omamobile-camera-calibrate --dry-run --eeprom "$tmp/eeprom.bin" --base "$tmp/base.yaml")
+grep -c -- '- LensShading:' <<<"$out" >/dev/null || fail "calibrate adds a LensShading entry"
+k1=$(sed -n 's/^ *k1: \[ \([0-9.]*\),.*/\1/p' <<<"$out")
+python3 -c "import sys; sys.exit(not 1.5 < float('$k1') < 3.0)" || fail "calibrate's red k1 ($k1) follows the grid"
+grep -B1 -- '- Agc:' <<<"$out" | grep -c 'k2:' >/dev/null || fail "LensShading goes before Agc"
+printf '\x00' | dd of="$tmp/eeprom.bin" bs=1 seek=$((0xC0)) conv=notrunc status=none
+out=$(bin/omamobile-camera-calibrate --dry-run --eeprom "$tmp/eeprom.bin" --base "$tmp/base.yaml")
+[[ $out == *"fails its checksum"* && $out != *LensShading* ]] || fail "calibrate refuses a grid that fails its checksum"
+pass "camera calibrate: lens shading from the EEPROM's grid, checksums enforced"
 
 # omamobile-wlan-mac only ever sets a unicast, globally administered address
 for bad in "02:11:22:33:44:55" "not-a-mac" ""; do

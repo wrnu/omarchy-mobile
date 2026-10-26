@@ -8,8 +8,11 @@
 # boot, so nothing camera-related runs while the boot is still settling. Order:
 #   1. the SLG51000 camera PMIC (powered from its boost and buck converters
 #      only while one of its LDOs is on);
-#   2. the ultrawide IMX386 (powers up for its chip ID and off again);
-#   3. the DC-PHY and the CSIS driver, which registers the media graph
+#   2. omamobile-camera-calibrate: lens shading from the module EEPROM's
+#      factory data (at24 probes it once the PMIC's LDO1 exists), written
+#      before any camera appears, as libcamera reads it when one does;
+#   3. the ultrawide IMX386 (powers up for its chip ID and off again);
+#   4. the DC-PHY and the CSIS driver, which registers the media graph
 #      libcamera (and PipeWire's libcamera plugin) finds.
 # Nothing streams until an application asks. A marker is written and synced
 # first and removed at the end: if a boot hangs here, the next boot leaves
@@ -46,6 +49,7 @@ load() {
 }
 load slg51000_regulator
 udevadm settle -t 10
+omamobile-camera-calibrate || log "omamobile-camera-calibrate failed"
 load imx386 phy_gs201_mipi_dcphy_rx gs201_csis
 udevadm settle -t 10
 
