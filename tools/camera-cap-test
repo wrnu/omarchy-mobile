@@ -39,6 +39,10 @@
 #   SENSOR_OPTS= sensor module parameters for one run (it is reloaded)
 #   PRE_STREAM=  a command run just before streaming ($SENSOR_DEV: the
 #                sensor's I2C device, e.g. 0-003d)
+#   CAM=args     hand the camera to libcamera instead: runs cam ARGS once
+#                the media graph is up (e.g. CAM="-c1 --capture=10
+#                --file=/tmp/uw-#.ppm"); sensor formats and controls are
+#                libcamera's, PATTERN and CTRLS are ignored
 #   CSIS_OPTS=   extra gs201_csis parameters for one experiment, e.g.
 #                "cam_khz=0" (no CAM DVFS vote: CAM3b.5a), "int_khz=0" or
 #                "sysreg_link_sel=1" (one per boot)
@@ -126,6 +130,17 @@ SUBDEV=$(media-ctl -d "$MD" -e "$SENSOR_ENT")
 NLINKS=$(media-ctl -d "$MD" -p | grep -c -- "-> \"$CSIS\":0")
 say "media $MD: '$SENSOR_ENT' -> '$CSIS' -> $VIDEO; sensor->CSIS links: $NLINKS"
 [ "$NLINKS" = 1 ] || { say "expected exactly one sensor->CSIS link"; exit 1; }
+
+if [ -n "${CAM:-}" ]; then
+	say "libcamera: cam -l; cam $CAM"
+	cam -l
+	# shellcheck disable=SC2086 # CAM is a list of arguments
+	timeout 60 cam $CAM
+	say "cam rc=$?"
+	DBG=$(ls -d /sys/kernel/debug/$(printf "%x" $((0x1a44 + LINK)))0000.csis 2>/dev/null | head -1)
+	[ -n "$DBG" ] && cat "$DBG/stats"
+	exit 0
+fi
 
 media-ctl -d "$MD" -V "\"$SENSOR_ENT\":0 [fmt:$CODE/${W}x${H}]" || exit 1
 media-ctl -d "$MD" -V "\"$CSIS\":0 [fmt:$CODE/${W}x${H}]" || exit 1

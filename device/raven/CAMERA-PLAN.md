@@ -726,6 +726,17 @@ enabled yet), then runtime-suspend, which powers the sensor down again.
   endpoint to another link (one per boot, link 0, 1, 4, 6 in that order),
   through an overlay that rewrites the two `remote-endpoint`s.
 
+- **RC2.3** the result in the kernel DT, then libcamera. Kernel fixups
+  `2ffe4e64b` (binding: gs101's cam clock is the CSIS bus divider),
+  `47fc32224` (every gs101 CSIS node takes `CLK_DOUT_CMU_CSIS_BUS` as
+  `cam`) and `cda13b14b` (raven's IMX386 on `csis1`). `camera-uw-stream`
+  now enables `csis1`; the link overlays are gone.
+
+  | Step | Command | Expect / Pass | Stop if | Rollback | Risk |
+  | --- | --- | --- | --- | --- | --- |
+  | RC2.3a | `images`, push; `tools/camera-stage --watchdog x --cmd 'LINK=1 DMA=1 FRAMES=4 bash -s' --script tools/camera-cap-test` | as RC2.2a without an overlay's help: colour bars, INT0 bit 3 only | a hang; line errors (the cam clock missing) | push `g3f5d357b540d` with `camera-uw-link1` | medium |
+  | RC2.3b | on the phone: `modprobe phy_gs201_mipi_dcphy_rx gs201_csis` with the PMIC held, then `cam -l` and `cam -c1 --capture=10 --file=/tmp/uw-#.ppm` | the IMX386 listed through the simple pipeline; 10 frames through the soft ISP | a hang; no camera listed | a reboot | medium |
+
 ### Later
 
 RC3: the main GN1 (C-PHY if cheetah's main is any guide: the schedule risk).
@@ -1803,3 +1814,25 @@ run.
 Next: the kernel DT moves `uw_out` to `csis1_in` and gives `csis1` the
 `cam` clock (replacing `camera-uw-stream` and the link overlays), and then
 `cam -c1 --capture=10`.
+
+### RC2.3a and RC2.3b on the phone (2026-10-25, `7.3.0-rc6-omamobile-push1-ga3ad00e61091`): pass, **libcamera captures from the ultrawide**
+
+Kernel fixups `a3ad00e61` (binding), `47fc32224` (the `cam` clock on every
+gs101 CSIS node) and `cda13b14b` (raven's IMX386 on `csis1`), with
+`camera-uw-stream` enabling `csis1`. Boots, taint 0; `csis@1a450000`
+has clock-names `link`, `dma`, `cam`.
+
+RC2.3a (`logs/camera-20261025-170328-x.log`): 4 colour-bar frames, INT0
+bit 3 only, as RC2.1k with the overlay.
+
+RC2.3b: `cam` is in `libcamera-tools`, which wasn't installed; installed
+from `[omamobile]` (0.7.2-4.21, the same build as libcamera). Then
+`CAM="-c1 --capture=10 --file=/tmp/uw-#.ppm"` (`170430`): `cam -l` lists
+"Internal back camera" (the IMX386 node) through the simple pipeline;
+10 frames at 4024x3016 through the soft ISP, about 21 fps, rc 0. CSIS: 16
+WDMA frames, no WDMA error, INT0 bit 3 only.
+
+RC2.3c, `-s width=2016,height=1508 --capture=60 --metadata`: 60 frames
+at 2008x1508, 30 fps. AGC ends at its limit (AnalogueGain 16, ExposureTime
+33238 µs), and frame 59 averages R 3, G 4, B 1 of 255: the phone lay face
+down. A capture of a lit scene is next, and then the tuning.
