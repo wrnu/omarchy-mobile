@@ -1832,7 +1832,24 @@ from `[omamobile]` (0.7.2-4.21, the same build as libcamera). Then
 10 frames at 4024x3016 through the soft ISP, about 21 fps, rc 0. CSIS: 16
 WDMA frames, no WDMA error, INT0 bit 3 only.
 
-RC2.3c, `-s width=2016,height=1508 --capture=60 --metadata`: 60 frames
+RC2.3c (`170520`), `-s width=2016,height=1508 --capture=60 --metadata`: 60 frames
 at 2008x1508, 30 fps. AGC ends at its limit (AnalogueGain 16, ExposureTime
 33238 µs), and frame 59 averages R 3, G 4, B 1 of 255: the phone lay face
 down. A capture of a lit scene is next, and then the tuning.
+
+### RC2.3d on the phone (2026-10-25, `7.3.0-rc6-omamobile-push1-ga3ad00e61091`): pass, **a photo from the ultrawide**
+
+The human propped the phone up facing a lit room. Same run as RC2.3c
+(`logs/camera-20261025-171109-x.log`): 60 binned frames, 30 fps, rc 0. AGC
+settles at AnalogueGain 2.49 and ExposureTime 33238 µs; frame 59 averages R
+106, G 94, B 85 with highlights at 255. The image is sharp and correctly
+oriented, with the stand-in IMX519 colour matrix giving plausible colour, a
+little warm under the room's tungsten light. Never committed: it shows the
+human's home.
+
+The ultrawide works through libcamera's simple pipeline and soft ISP. Left:
+calibrate the IMX386 tuning (black level, lens shading, colour) in place of
+the stand-in; make the bring-up permanent (the PMIC's bb, buck and pu lines
+from a driver or package rather than `camera-pmic-gpio`'s Python holder,
+the modules out of the blacklist); then omacam; then the INT bus rate for
+the WDMA under load, and the curated kernel series.
