@@ -66,7 +66,7 @@ done
   || fail "the USB rescue unit is enabled by a vendor wants link"
 [[ $(readlink "$tmp/root/usr/lib/systemd/system/timers.target.wants/omamobile-camera.timer") == ../omamobile-camera.timer ]] \
   || fail "the camera timer is enabled by a vendor wants link"
-for m in slg51000_regulator imx386 s5kgn1 phy_gs201_mipi_dcphy_rx gs201_csis; do
+for m in slg51000_regulator imx386 s5kgn1 ak7375 phy_gs201_mipi_dcphy_rx gs201_csis; do
   grep -qx "blacklist $m" "$tmp/root/usr/lib/modprobe.d/omamobile-camera.conf" || fail "$m is blacklisted for autoload"
 done
 grep -c 'load slg51000_regulator$' bin/omamobile-camera-start >/dev/null || fail "the camera start loads the PMIC first"
@@ -74,6 +74,8 @@ grep -c 'load slg51000_regulator$' bin/omamobile-camera-start >/dev/null || fail
   || fail "the calibration is written before the camera appears"
 [[ $(grep -n -m1 '^    load s5kgn1$' bin/omamobile-camera-start | cut -d: -f1) -lt $(grep -n -m1 '^load phy_gs201_mipi_dcphy_rx gs201_csis$' bin/omamobile-camera-start | cut -d: -f1) ]] \
   || fail "the main camera loads before the receiver, only with its mode file"
+grep -c '^    \[\[ -e \$gn1/lens-focus \]\] && load ak7375$' bin/omamobile-camera-start >/dev/null \
+  || fail "the main camera's lens loads with it when the DTB links one"
 pass "the camera loads from its timer, PMIC first, and nothing autoloads"
 [[ $(readlink "$tmp/root/usr/lib/systemd/system-sleep/omamobile") == /usr/bin/omamobile-sleep ]] \
   || fail "the sleep hook is linked into system-sleep"

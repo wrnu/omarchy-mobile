@@ -2177,3 +2177,33 @@ the AF driver (ak7377), then libcamera and a tuning file.
   the `s5kgn1.yaml` tuning cheetah's libcamera package already ships. At
   night the room is dim for both cameras; the main camera's colour and its
   `rotation` (90, cheetah's) wait for a daylight look in omacam.
+
+### RC4.6 on the phone (2026-10-26, `7.3.0-rc6-omamobile-push1-g691ed9ac8a1c`): pass, **rotation confirmed, autofocus works**
+
+- **Rotation.** In daylight, the main camera's frame (libcamera, 2024x1536)
+  turned 180 degrees matches the ultrawide's of the same scene (blinds,
+  door, table, no mirroring). The ultrawide is upright at 270 (RC2.6), so
+  the main camera's 90 (cheetah's) is right.
+- **The actuator.** Stock's `act-ak7377` at 0x0c on `hsi2c_1` answers with
+  the sensor powered: 0x02 reads 0x20 (the AK737x mode register after
+  power-up), 0x03 0x13, the rest 0. With LDO1 alone (the ultrawide held on)
+  it NACKs. RC4.6a, overlay `camera-main-lens-test` with each LDO given a
+  `regulator-output` switch (the sensor unbound for the test, as the switch
+  takes its rail exclusively): LDO1+LDO2 NACK, **LDO1+LDO3 answer**,
+  LDO1+LDO2+LDO3 answer. So the ak7375 driver's vio is LDO1, vdd LDO3.
+- device-raven 0.1.27 blacklists `ak7375` and `omamobile-camera-start`
+  loads it with `s5kgn1` when the sensor has `lens-focus`. The overlay
+  (now: the node and `lens-focus`) boots with `ak7375 0-000c` in link 0's
+  media graph, both cameras listed, taint 0. Two "ak7375_vcm_resume I2C
+  failure: -6" at 41 s when WirePlumber first opens the subdev (cheetah
+  logs one); later opens work (`focus_absolute` set and read back), and
+  WirePlumber then holds the lens powered.
+- `cam -c1` with `IPASoftAf:0`: coarse sweep 0-2044 (sharpness 1.0-3.6 M,
+  peak at 1022), fine sweep, **"Autofocus completed at 1152"**; the frame
+  is sharp (chair slats, blinds, buildings outside). 152 frames, WDMA
+  errors 0.
+- Kernel `e6dd44e20` (`7.3.0-rc6-omamobile-push1-ge6dd44e204cf`) puts the node in `gs101-raven.dts`, disabled; the
+  overlay enables it and adds `lens-focus`. On it: the same boot log, "Autofocus completed at 1058", WDMA errors 0, taint 0.
+- Left: the corners darken (no lens shading for the main camera; its
+  calibration is in the OIS controller's EEPROM at 0x24), and full
+  resolution (options 2 and 3).

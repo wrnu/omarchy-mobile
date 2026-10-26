@@ -57,6 +57,8 @@ gn1=/sys/firmware/devicetree/base/soc@0/usi@109000c0/i2c@10900000/camera-sensor@
 if [[ $(tr -d '\0' < "$gn1/status" 2>/dev/null) == okay ]]; then
   fw=$(tr -d '\0' < "$gn1/firmware-name" 2>/dev/null)
   if [[ -n $fw && ( -e /usr/lib/firmware/updates/$fw || -e /usr/lib/firmware/$fw ) ]]; then
+    # its focus actuator, which the sensor's media graph then waits for
+    [[ -e $gn1/lens-focus ]] && load ak7375
     load s5kgn1
   else
     log "the main camera's mode file (${fw:-none named}) is not installed; leaving it off"

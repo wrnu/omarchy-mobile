@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: MIT
+/*
+ * Bring-up only (CAMERA-PLAN.md, RC4.6): the main camera's focus actuator.
+ * The node is in the kernel (gs101-raven.dts), disabled: stock's
+ * "act-ak7377" at 0x0c on the sensor's bus, driven as an AK7375, vio LDO1
+ * and vdd LDO3 (RC4.6a). This enables it and links it to the sensor with
+ * lens-focus; the sensor's media graph then waits for it, so
+ * omamobile-camera-start (device-raven 0.1.27) loads ak7375 with s5kgn1.
+ * Needs camera-main-test.
+ */
+/dts-v1/;
+/plugin/;
+
+&main_vcm {
+	status = "okay";
+};
+
+&{/soc@0/usi@109000c0/i2c@10900000/camera-sensor@3d} {
+	lens-focus = <&main_vcm>;
+};
