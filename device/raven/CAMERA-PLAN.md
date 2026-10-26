@@ -2158,3 +2158,22 @@ DC-PHY's C-PHY row from 500 Msps applies (settle 9).
 
 Next: load the sensor at boot (`omamobile-camera-start`) with the slow file,
 the AF driver (ak7377), then libcamera and a tuning file.
+
+### RC4.5 on the phone (2026-10-26, `7.3.0-rc6-omamobile-push1-g691ed9ac8a1c`): pass, **the main camera at every boot and through libcamera**
+
+- device-raven 0.1.26: `omamobile-camera-start` loads `s5kgn1` after the
+  ultrawide and before the receiver, only when the DTB enables the sensor
+  and the mode file its `firmware-name` names is installed (the file comes
+  from the user's own factory image). `test/all` passes (on the phone).
+- After a reboot: "S5KGN1, model 0x08e1" at 40 s, link 0's media graph with
+  `s5kgn1 0-003d`, the sensor suspended, the ultrawide as before, taint 0.
+  `cam -l` lists both back cameras, the main one first.
+- The slow file now offers only the two binned modes (2016x1136 and
+  2032x1536): at half the link rate a 4080-wide line doesn't fit, and an
+  application asking for full size would otherwise get those modes.
+  libcamera's default becomes 2024x1536.
+- `cam -c1` at 2024x1536: 19.5 fps, WDMA done 22, errors 0 (b3 only); at
+  1920x1080 (sensor 2016x1136): 30 fps, errors 0. The software ISP uses
+  the `s5kgn1.yaml` tuning cheetah's libcamera package already ships. At
+  night the room is dim for both cameras; the main camera's colour and its
+  `rotation` (90, cheetah's) wait for a daylight look in omacam.

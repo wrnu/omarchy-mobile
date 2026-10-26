@@ -72,6 +72,8 @@ done
 grep -c 'load slg51000_regulator$' bin/omamobile-camera-start >/dev/null || fail "the camera start loads the PMIC first"
 [[ $(grep -n -m1 'omamobile-camera-calibrate ||' bin/omamobile-camera-start | cut -d: -f1) -lt $(grep -n -m1 '^load imx386' bin/omamobile-camera-start | cut -d: -f1) ]] \
   || fail "the calibration is written before the camera appears"
+[[ $(grep -n -m1 '^    load s5kgn1$' bin/omamobile-camera-start | cut -d: -f1) -lt $(grep -n -m1 '^load phy_gs201_mipi_dcphy_rx gs201_csis$' bin/omamobile-camera-start | cut -d: -f1) ]] \
+  || fail "the main camera loads before the receiver, only with its mode file"
 pass "the camera loads from its timer, PMIC first, and nothing autoloads"
 [[ $(readlink "$tmp/root/usr/lib/systemd/system-sleep/omamobile") == /usr/bin/omamobile-sleep ]] \
   || fail "the sleep hook is linked into system-sleep"

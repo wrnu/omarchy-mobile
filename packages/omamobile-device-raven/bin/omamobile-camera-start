@@ -50,7 +50,19 @@ load() {
 load slg51000_regulator
 udevadm settle -t 10
 omamobile-camera-calibrate || log "omamobile-camera-calibrate failed"
-load imx386 phy_gs201_mipi_dcphy_rx gs201_csis
+load imx386
+# the main camera (RC4), when the DTB enables it and the mode file it names
+# (extracted from the user's own factory image) is installed
+gn1=/sys/firmware/devicetree/base/soc@0/usi@109000c0/i2c@10900000/camera-sensor@3d
+if [[ $(tr -d '\0' < "$gn1/status" 2>/dev/null) == okay ]]; then
+  fw=$(tr -d '\0' < "$gn1/firmware-name" 2>/dev/null)
+  if [[ -n $fw && ( -e /usr/lib/firmware/updates/$fw || -e /usr/lib/firmware/$fw ) ]]; then
+    load s5kgn1
+  else
+    log "the main camera's mode file (${fw:-none named}) is not installed; leaving it off"
+  fi
+fi
+load phy_gs201_mipi_dcphy_rx gs201_csis
 udevadm settle -t 10
 
 rm -f "$marker"
