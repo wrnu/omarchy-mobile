@@ -1,0 +1,55 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT
+# Load the camera drivers once the system is up (device/raven/CAMERA-PLAN.md
+# RC2.5), hang-safe like cheetah's.
+#
+# The modules stay blacklisted for autoload (modprobe.d/omamobile-camera.conf):
+# this script is what loads them, from omamobile-camera.timer some time after
+# boot, so nothing camera-related runs while the boot is still settling. Order:
+#   1. the SLG51000 camera PMIC (powered from its boost and buck converters
+#      only while one of its LDOs is on);
+#   2. the ultrawide IMX386 (powers up for its chip ID and off again);
+#   3. the DC-PHY and the CSIS driver, which registers the media graph
+#      libcamera (and PipeWire's libcamera plugin) finds.
+# Nothing streams until an application asks. A marker is written and synced
+# first and removed at the end: if a boot hangs here, the next boot leaves
+# the camera off; "omamobile-camera-start --retry" tries again.
+set -uo pipefail
+
+marker=/var/lib/omamobile/camera-start-started
+log() { echo "omamobile-camera: $*"; }
+
+[[ ${1:-} == --retry ]] && rm -f "$marker"
+if [[ -e $marker ]]; then
+  log "the last start ($(cat "$marker" 2>/dev/null)) never finished; the camera stays off this boot."
+  log "after checking the previous boot's log, retry with: omamobile-camera-start --retry"
+  exit 0
+fi
+if [[ ! -e /sys/bus/platform/devices/1a450000.csis ]]; then
+  log "the camera receiver is not enabled in this DTB; nothing to do"
+  exit 0
+fi
+# a kernel whose PMIC node lacks its vdd supply needs tools/camera-pmic-gpio
+if [[ ! -e /sys/firmware/devicetree/base/soc@0/usi@109600c0/i2c@10960000/pmic@75/vdd-supply ]]; then
+  log "the camera PMIC has no vdd supply in this DTB (an older kernel); nothing to do"
+  exit 0
+fi
+
+mkdir -p "${marker%/*}"
+date -Is > "$marker" && sync -f "$marker"
+
+load() {
+  local m
+  for m; do
+    modprobe "$m" || log "modprobe $m failed"
+  done
+}
+load slg51000_regulator
+udevadm settle -t 10
+load imx386 phy_gs201_mipi_dcphy_rx gs201_csis
+udevadm settle -t 10
+
+rm -f "$marker"
+sync -f "${marker%/*}"
+n=$(ls -d /sys/bus/media/devices/media* 2>/dev/null | wc -l)
+log "camera drivers loaded; $n media devices"
