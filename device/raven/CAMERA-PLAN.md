@@ -1899,3 +1899,30 @@ AGC at gain 4. Taint 0 throughout.
 supply. Next: an OF match table for `slg51000-regulator` (it has none, so it
 never autoloads from the DT), then the camera modules off the blacklist and
 into `omamobile-device-raven`, so the camera is there at every boot.
+
+### RC2.5 on the phone (2026-10-25, `7.3.0-rc6-omamobile-push1-g5adfebfb19c3`): pass, **the camera at every boot**
+
+`omamobile-device-raven` 0.1.23 (built and installed on the phone): as on
+cheetah, the camera modules are blacklisted for autoload, and
+`omamobile-camera-start` loads them from `omamobile-camera.timer` 40 s into
+the boot behind a hang marker (PMIC, then the IMX386, the DC-PHY and CSIS).
+The package also has the DMA-BUF heap rule for the software ISP in a user
+session, and WirePlumber rules that name the "Ultrawide camera" and hide
+the raw CSIS nodes. Package tests pass on the phone apart from
+"a dry run writes nothing", which fails on the unchanged package too (to
+look at separately).
+
+Bring-up files removed: `/etc/modprobe.d/omamobile-camera-bringup.conf`
+(the same names as the package's file) and the user's WirePlumber drop-in
+that hid the cameras.
+
+- `systemctl start omamobile-camera`: four modules, one media device, the
+  PMIC `suspended` 3 s later with GPIOs 1 and 3 low. `wpctl status`:
+  "Ultrawide camera" is the default video source (libcamera device
+  `imx386`); `cam -l` lists it as the user.
+- omacam, started in the session: the IMX386 streams (CSIS at 399.36 MHz),
+  149 frames in 5 s (30 fps), no WDMA error, 1 frame dropped at start. The
+  screen was off, so no screenshot.
+- Reboot: `omamobile-camera.service` active, "camera drivers loaded; 1
+  media devices", no marker left, the PMIC `suspended`, the camera in
+  PipeWire. Taint 0.
