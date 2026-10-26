@@ -2127,3 +2127,34 @@ Later: the camera at boot (`omamobile-camera-start`), a tuning file, the focus a
   so quad stops overflowing at 399 MHz; (2) octa with DMA (why the WDMA gets
   nothing: its line hand-over); (3) the CSIS bus from the 533 MHz parent
   (human's go: above stock's known levels).
+
+### RC4.4 on the phone (2026-10-25, `7.3.0-rc6-omamobile-push1-g691ed9ac8a1c`): pass, **the main camera's first image, at half the link rate**
+
+Option 1. The OP PLL registers follow the layout of the S5KJN1 tables posted
+to linux-media (2026-08): 0x030e the pre-divider (4), 0x0310 the multiplier
+(0x1ba, 442), 0x0312 the post-scaler (1) [I: not named in any source read].
+The modes write only the VT multiplier (0x0306 0x10a) and 0x030c 0. The
+variant `s5kgn1-main-slow.bin` (off-repo, in `~/android/reference/`) is the
+extracted file with one register and the four modes' link frequencies
+changed; overlay `camera-main-slow` points the sensor at it and adds
+465614984 Hz to the endpoint. Drop the overlay to go back. At 931 Msps the
+DC-PHY's C-PHY row from 500 Msps applies (settle 9).
+
+- 0x0310 halved, 442 to 221 (`logs/camera-20261025-233905-x.log`): the
+  sensor never starts (`frame_count` stays 255), 0 link interrupts. The OP
+  PLL's VCO (6.144 MHz x 221, about 1.36 GHz) is out of its range [I].
+- 0x0310 back to 442, 0x0312 1 to 2 (the file reloaded by unbinding and
+  binding `0-003d`; the media graph holds the module): link only, quad,
+  colour bars (`234004`): **FS/FE 85 in 5 s, b3 only, no `ERR_OVER`.**
+- With DMA, quad (`234041`): **WDMA done 4, errors 0**; the colour bars read
+  exact across the whole frame (0/1023 per bar, the last rows too), GRBG.
+- `PATTERN=0`, `analogue_gain=128` (`234134`): WDMA done 4, errors 0, a
+  coherent image of the room, rotated 90 degrees as the DT's `rotation`
+  says, out of focus (no AF driver loaded), no white balance or shading.
+- Limit: at half the rate a full-resolution line (4080 x 10 bits over three
+  trios, about 6.4 us) no longer fits stock's 4.4 us line (5776 clocks).
+  The binned 2032x1536 mode (7 us lines here) is fine. Full resolution needs
+  stock's rate, so quad at 533 MHz or a working octa (options 2 and 3).
+
+Next: load the sensor at boot (`omamobile-camera-start`) with the slow file,
+the AF driver (ak7377), then libcamera and a tuning file.

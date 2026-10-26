@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: MIT
+/*
+ * Bring-up only (CAMERA-PLAN.md, RC4.4): the main camera at half its C-PHY
+ * symbol rate. At stock's 1862 Msps per trio, link 0 overflows (INT0 bit 4)
+ * in quad pixel mode at our 399 MHz CSIS bus. This points the S5KGN1 at
+ * s5kgn1-main-slow.bin, the extracted file with the output PLL multiplier
+ * (0x0310) halved, 442 to 221, and each mode's link frequency with it, and
+ * adds that frequency to the endpoint. Needs camera-main-test and
+ * camera-main-stream; drop it to go back to stock's rate.
+ */
+/dts-v1/;
+/plugin/;
+
+&{/soc@0/usi@109000c0/i2c@10900000/camera-sensor@3d} {
+	firmware-name = "omamobile/camera/s5kgn1-main-slow.bin";
+};
+
+&{/soc@0/usi@109000c0/i2c@10900000/camera-sensor@3d/port/endpoint} {
+	link-frequencies = /bits/ 64 <931229968 465614984>;
+};
