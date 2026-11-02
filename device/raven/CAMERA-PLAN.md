@@ -2207,3 +2207,39 @@ the AF driver (ak7377), then libcamera and a tuning file.
 - Left: the corners darken (no lens shading for the main camera; its
   calibration is in the OIS controller's EEPROM at 0x24), and full
   resolution (options 2 and 3).
+
+### RC4.7 on the phone (2026-11-02, `7.3.0-rc6-omamobile-push1-ge6dd44e204cf`): pass, **lens shading for the main camera from a flat field**; a hang after suspend found
+
+- **A hang, from suspend.** The first two captures of the day froze the
+  phone hard on the first stream (USB gone, screen frozen, no watchdog
+  reset, pstore empty, the journal ends before the capture). Both boots had
+  been through s2idle, and every suspend logs "Power domain csis disable
+  failed (status 0x1)". On a fresh boot with no suspend, under
+  `tools/camera-stage --watchdog x`, the same `cam -c1 -C2 role=raw` capture
+  passed (FS 2, FE 2, WDMA errors 0). Lead suspect: the CSIS power domain
+  left on across a suspend breaks the next stream; not proven. Until it's
+  fixed, a capture step checks `journalctl -b 0 | grep -c "PM: suspend
+  entry"` reads 0 and runs under `systemd-inhibit --what=sleep:idle`.
+  (The first attempt also met a flat battery: our Linux doesn't charge
+  raven from the laptop, so upower had been suspending it on critical
+  battery for days.)
+- **Flat field.** White paper over the camera bar against a window,
+  `cam -c1 -C3 -s role=raw,width=2032,height=1536`: frame 0 empty, frames 1
+  and 2 unclipped (centre about 316, corners about 126 in 10 bits), and
+  `tools/camera-lsc-fit --order GRBG --black 64` gives the same fit from
+  both to the fourth decimal: corner gain 4.7 red, 4.3 green, 4.4 blue.
+- **Check.** The paper again with the correction applied (processed,
+  2024x1536): corners 82-86 % of the centre, falling smoothly with radius,
+  neutral (R, G, B within 3 %). A backlit room scene: dark corners up about
+  2x, no colour cast. Faint concentric rings with a slight magenta/green
+  alternation show on the flat paper only; noise hides them in scenes.
+  Follow-up: check the software ISP's shading precision.
+- The coefficients are this phone's module, so they are not committed:
+  they sit in a phone-local `/etc/libcamera/ipa/simple/s5kgn1.yaml` (the
+  package's file plus `LensShading`, read before `/usr/share`), with a copy
+  off-repo. That copy doesn't follow later changes to the package's
+  `s5kgn1.yaml`; `omamobile-camera-calibrate` should generate it, as it does
+  the ultrawide's, from a stored fit.
+- Left: the suspend hang (kernel, CSIS power domain), generating the
+  main camera's tuning at camera start, and full resolution (options 2
+  and 3).
