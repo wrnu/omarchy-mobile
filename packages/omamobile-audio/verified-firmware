@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# Speaker protection firmware verified on the reference phone
+# Speaker protection firmware verified on a reference phone
 # (/usr/share/omamobile-audio/verified-firmware; device/cheetah/AOC-PLAN.md,
 # "C9 for every phone with verified firmware").
 #
@@ -27,3 +27,4 @@
 #
 
 cheetah 5d457a3db82d1f72e4c938368d3c04dcf9b974aff08347c2d595dc88928b347c reference 7 Pro, factory image cp2a.260705.006, C9a verify 2026-11-02, c9 levels 2026-10-31
+raven de182a2db49cf070132202aa3ae6845d386bb553a6bac637db9196d90b700de5 reference 6 Pro, C9a verify 2026-11-02, c9 levels with music 2026-11-02 (device/raven/AUDIO-PLAN.md "C9 on raven")

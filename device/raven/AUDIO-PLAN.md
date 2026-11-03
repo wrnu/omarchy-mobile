@@ -423,3 +423,60 @@ clash Derek pointed out. Ways forward, not decided: give the card a
 speaker-less link set when the amplifiers are absent, or load the
 amplifier driver muted with no protection firmware, so the card and the
 microphones come up while the speakers stay off.
+
+## C9 on raven: verified protection and the louder level (2026-11-02, `7.3.0-rc6-omamobile-push1-g1adc782c97c8`, omamobile-audio 0.5.10)
+
+Run with the owner listening, phone on a table, following cheetah's C9
+procedure (`device/cheetah/AOC-PLAN.md` C9a, C9c, "C9 with real music").
+Raven's amplifiers report `cirrus,subsystem-id` "raven" and load
+`cs35l41-dsp1-spk-prot-raven*` (the tuning names 17.5 dB, stock's gain 17).
+
+- **Before, two bring-up fixes on the phone (not packaged yet):**
+  - 0.4.4's WirePlumber rule matched only cheetah's card name, so raven's
+    sink ran mmap with 1024 x 12 periods: the AoC ring stayed full (about
+    11 s queued) and played in sub-second bursts. 0.5.10's
+    `53-omamobile-raven-aoc.conf` (no mmap, 960 x 4) fixed it: about 30 ms
+    queued.
+  - 0.5.10's `omamobile-speaker-protection.service` is gated on cheetah's
+    AoC (`181d0000.aoc`), so on raven it is skipped and the speakers stay
+    muted. A drop-in,
+    `/etc/systemd/system/omamobile-speaker-protection.service.d/omamobile-raven-bringup.conf`,
+    gates it on raven's `175d0000.aoc` instead; it belongs in
+    device-raven.
+- **C9a passed** at 737/10 (boost off): `0x2018` = `0x3701` (VMON, IMON on;
+  boost bit off), DSP1 RX3-RX7 = 0x18, 0x19, 0x28, 0x29, 0x3a on both,
+  read only below 0x10100; the heartbeat moved about 1500/s throughout; two
+  -10 dBFS bursts raised the coils 0.9 C (top) and 0.7 C (bottom) and they
+  fell back after; `verify` passed and wrote the stamp.
+- **C9c:** `options aoc_alsa_dev speaker_protection=1` in
+  `/etc/modprobe.d/omamobile-audio-c9-bringup.conf`; after the reboot `Y`
+  and analog limit 17 on both. With the stamp, stage auto went straight to
+  c9 (817, top 11, bottom 14); it was pinned lower for the steps below.
+- **Stepping, real music at 100 % sink volume, 30 s each, a guard muting at
+  70 C or any state, error or count:**
+
+  | Step | Top / bottom gain (digital 817) | End of 30 s, top / bottom | By ear |
+  | --- | --- | --- | --- |
+  | multitone -20 dBFS | 10 / 10 | 35.8 / 37.7 C after 1 s (a strict 10 C jump guard tripped; as cheetah at 817/10, the firmware leaving its idle estimate) | |
+  | 1 | 10 / 10 | 37.8 / 38.4 C | |
+  | 2 | 11 / 12 | 39.7 / 39.9 C | louder, clean |
+  | 3 | 11 / 14 | 39.4 / 42.9 C | clean |
+  | 3, 3.5 min | 11 / 14 | 37-41 / 40-47 C, peaks 43.9 / 48.3 C | clean |
+
+  No over-temperature, over-excursion or abnormal-mute counts, no cs35l41
+  errors, no watchdog action. Raven's coils ran about 20 C under cheetah's
+  60-65 C at the same levels.
+- **Now:** stage auto, c9 from this phone's stamp, 817 with top 11 and
+  bottom 14, boost on. Rollback: `omamobile-speaker-protection mute`,
+  `OMAMOBILE_SPK_STAGE=media` in `/etc/omamobile/speaker.conf`, restart the
+  service.
+- **Packaged (2026-11-03, omamobile-device-raven 0.1.32 and omamobile-audio
+  0.5.14; on the phone as 0.1.31 and 0.5.11, before the rebase onto main's
+  0.1.30 and 0.5.13):** device-raven ships `options aoc_alsa_dev speaker_protection=1`
+  in its `omamobile-aoc.conf` and the speaker service's raven gate as
+  `omamobile-speaker-protection.service.d/10-omamobile-raven.conf`;
+  omamobile-audio lists raven's firmware digest in `verified-firmware`. The
+  `/etc` bring-up files are deleted. With the stamp moved aside the service
+  chose c9 "from the verified firmware list" (a fresh install's path), then
+  the stamp was put back. Stock's 17 on both stays out until the tuning's
+  limit is known, as on cheetah.
