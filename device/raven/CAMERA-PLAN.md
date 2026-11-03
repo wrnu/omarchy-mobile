@@ -2243,3 +2243,36 @@ the AF driver (ak7377), then libcamera and a tuning file.
 - Left: the suspend hang (kernel, CSIS power domain), generating the
   main camera's tuning at camera start, and full resolution (options 2
   and 3).
+
+### RC4.8 on the phone (2026-11-02, `7.3.0-rc6-omamobile-push1-g1adc782c97c8`): the stack rebased onto upstream; the hang after suspend is genpd's resume cycle
+
+- **Rebase.** Kernel `omamobile-gs101-camera-v2`: current `derekross/omamobile`
+  (André Draszik's gs101 power domain series, the battery and charger, thermal,
+  flash LED, haptics, touch, Bluetooth, ramoops), robotosaith's display series
+  (`omamobile-gs101-display-pr`) and the raven commits upstream doesn't have yet
+  (AoC, Wi-Fi, modem, GNSS, amplifiers, GPU scaling), then the camera series.
+  Our older power-domain base is dropped for Draszik's; the 10 ms gs101 wait is
+  re-done on it. This repository: `device-raven 0.1.30` on upstream's 0.1.29.
+- **On the phone.** Taint 0, no failed units; display, touch and Wi-Fi up.
+  Charging works for the first time (0.1.30 drops the old charger blacklist):
+  "Charging", float 4.45 V, 1.47 A, temperature guard on. Both cameras capture
+  (main 2024x1536, ultrawide 4032x3016; 33 WDMA errors at the ultrawide's stop,
+  frames intact). The RTC now wakes the phone from s2idle (about 28 s for 30 s).
+  The gadget's product string is now "Pixel 6 Pro", so a Mac sees a new adapter
+  that needs 172.16.42.2 set once.
+- **The hang, again.** One RTC-woken s2idle, then `cam -c1 -C2 role=raw` under
+  `camera-stage --watchdog`: hung at the first access (no CSIS line after the
+  step marker), watchdog reset, pstore empty. During the suspend:
+  "itp/pdp/csis disable failed: -110 (status 0x1)", all three off before it and
+  on after it.
+- **Cause, from the code.** `genpd_finish_resume()` powers on the domain of every
+  device in it, runtime-suspended or not, and `genpd_complete()` then queues the
+  power-off. So each system resume cycles pd_csis (and pd_pdp, pd_itp) on and
+  off. A power-off right after a bare power-on times out, as in RC2.0f-zg, where
+  pd_csis only powered off once CMU_CSIS was written back after the DTZPC
+  restore; nothing restores CMU_CSIS on genpd's resume power-on. The failed
+  power-off has already asked EL3 to save the DTZPC, so the block's registers
+  are left secure and the next stream's first access hangs the SoC.
+- Next (offline): keep these domains from being cycled by system resume, or
+  restore CMU_CSIS on that power-on so the power-off completes; then the same
+  suspend-then-capture test. Until then, no capture after a suspend.
