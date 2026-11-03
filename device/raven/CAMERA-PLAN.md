@@ -2345,3 +2345,19 @@ Steps as RC4.9 (a-f), with these expectations instead:
   domains still `off-0` after the suspend.
 - RC4.9e: the capture passes; the domains `off-0` after it.
 - Stop as RC4.9; rollback: push RC4.8's set (`g1adc782c97c8`).
+
+### RC4.10 on the phone (2026-11-03, `7.3.0-rc6-omamobile-push1-gcc0d345e31f0`): pass, **the cameras capture after suspend**
+
+`W=1` clean for `core.c` and `exynos-pm-domains.c`.
+- RC4.9a-c: taint 0, no failed units; the three domains `off-0`; a capture
+  before any suspend (FS 2, FE 2, link and WDMA), `off-0` after.
+- RC4.9d: an RTC-woken s2idle (25 s): **no "disable failed" for the first
+  time**, and the three domains still `off-0`.
+- RC4.9e: the capture that hung in RC4.7, RC4.8 and RC4.9 passes: FS 2,
+  FE 2; `off-0` after, no reset (uptime unbroken).
+- RC4.9f: a second s2idle, then the main camera (`1a440000.csis`) and the
+  ultrawide (`1a450000.csis`): FE 2 each, `off-0` after, no "disable failed"
+  in the boot, taint 0.
+- So the capture-after-suspend rule (no capture on a boot that suspended) is
+  lifted. Before any upstream PR: `GENPD_FLAG_RPM_RESUME` changes genpd's
+  core, so it goes to the genpd maintainers with this case.
