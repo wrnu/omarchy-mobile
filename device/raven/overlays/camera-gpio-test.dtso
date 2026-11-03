@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: MIT
+/*
+ * Bring-up only (CAMERA-PLAN.md, stage RC1.1): enable the S2MPG11 GPIO
+ * node, so gpio-s2mpg11 registers the six pins and logs them as ABL left
+ * them. Nothing uses the pins yet, so nothing is driven. Paths, not
+ * labels, so the base DTB needs no __symbols__.
+ */
+/dts-v1/;
+/plugin/;
+
+&{/firmware/power-management/pmic-2/gpio} {
+	status = "okay";
+};

@@ -1,0 +1,52 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT
+#
+# camera-pmic-probe: the raven camera PMIC's first power-up (device/raven/
+# CAMERA-PLAN.md, RC1.2), on the phone. Run it under the laptop's log stream
+# and the watchdog:
+#
+#   tools/phone-ssh 'cat > /run/camera-pmic-gpio' < tools/camera-pmic-gpio
+#   tools/camera-stage --watchdog x --cmd 'bash -s' --script tools/camera-pmic-probe
+#
+# bb and buck go high (camera-pmic-gpio hold, 60 s dead-man), then
+# slg51000-regulator loads: chip select high, 10 ms, then it reads each
+# LDO's range, mode and enable bits and the fault log. Nothing sets a
+# voltage or enables an LDO (the DT's LDOs have no constraints). Then the
+# driver is unloaded and everything is lowered in reverse order.
+set -u
+G=/run/camera-pmic-gpio
+PMIC=/sys/kernel/debug/regmap/firmware:power-management:pmic-2-pmic/registers
+gpio_regs() { echo "S2MPG11 GPIO 98-9e ($1):"; grep -E '^9[89a-e]:' "$PMIC" | tr '\n' ' '; echo; }
+mark() { echo "camera-pmic-probe: $*" > /dev/kmsg; echo "== $*"; }
+off() {
+  grep -c '^slg51000_regulator ' /proc/modules >/dev/null && rmmod slg51000_regulator
+  python3 $G cs-low
+  [ -n "${holder:-}" ] && kill "$holder" 2>/dev/null && wait "$holder"
+  gpio_regs "after power-down"
+}
+
+[ -r $G ] || { echo "copy tools/camera-pmic-gpio to $G first"; exit 1; }
+tr -d '\0' < /sys/firmware/devicetree/base/soc@0/usi@109600c0/i2c@10960000/pmic@75/status | grep -c okay >/dev/null ||
+  { echo "camera-pmic-test is not in the running DTB"; exit 1; }
+grep -c '^slg51000_regulator ' /proc/modules >/dev/null && { echo "slg51000_regulator already loaded: reboot first"; exit 1; }
+gpio_regs "before"
+
+mark "bb, then buck high (S2MPG11 GPIOs 1, 3)"
+python3 $G hold --max 60 &
+holder=$!
+trap off EXIT
+sleep 1
+kill -0 $holder 2>/dev/null || { echo "hold exited early"; holder=; exit 1; }
+gpio_regs "bb and buck high: expect 99: 0a"
+
+mark "loading slg51000-regulator (cs high, 10 ms, read-only probe)"
+modprobe slg51000-regulator; echo "modprobe-exit=$?"
+sleep 2
+gpio_regs "cs too: expect 99: 0b"
+dmesg | grep -iE 'slg51000|cam_ldo|-0075' | tail -20
+for r in /sys/class/regulator/regulator.*; do
+  n=$(cat $r/name 2>/dev/null)
+  case $n in cam_ldo*) printf '%s state=%s microvolts=%s\n' "$n" "$(cat $r/state 2>/dev/null)" "$(cat $r/microvolts 2>/dev/null)" ;; esac
+done
+b=$(echo /sys/bus/i2c/drivers/slg51000-regulator/*-0075); if [ -e "$b" ]; then echo "bound: ${b##*/}"; else echo "NOT bound"; fi
+mark "powering down: rmmod, cs low, buck, bb"

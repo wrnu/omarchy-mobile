@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: MIT
+/*
+ * Bring-up only (CAMERA-PLAN.md, stage RC4.2): enable the main camera's bus
+ * (USI1, hsi2c_1) and its S5KGN1 sensor node, so the s5kgn1 driver can
+ * power the sensor in stock's order and read its chip ID. The node is in
+ * the kernel (gs101-raven.dts, kernel dee78cf3f on), disabled. The driver
+ * is blacklisted (omamobile-camera.conf, device-raven 0.1.25 on) and loads
+ * only by hand, after omamobile-camera-start has loaded the camera PMIC.
+ * The CSIS link stays off: link 0 comes with streaming (RC4.3).
+ */
+/dts-v1/;
+/plugin/;
+
+&usi1 {
+	status = "okay";
+};
+
+&hsi2c_1 {
+	status = "okay";
+};
+
+&{/soc@0/usi@109000c0/i2c@10900000/camera-sensor@3d} {
+	status = "okay";
+};

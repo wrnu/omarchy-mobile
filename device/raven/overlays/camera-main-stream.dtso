@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: MIT
+/*
+ * Bring-up only (CAMERA-PLAN.md, RC4.3): the main camera's CSIS link 0.
+ * The node and the S5KGN1's C-PHY endpoint are in the kernel (gs101.dtsi,
+ * gs101-raven.dts, kernel 691ed9ac8 on), disabled; this turns the link on.
+ * Needs camera-uw-stream (the shared DC-PHY) and camera-main-test (the
+ * sensor). gs201_csis binds link 0 at boot with the ultrawide's link 1 and
+ * waits for the sensor, whose driver stays blacklisted: tools/camera-cap-test
+ * loads it.
+ */
+/dts-v1/;
+/plugin/;
+
+&csis0 {
+	status = "okay";
+};

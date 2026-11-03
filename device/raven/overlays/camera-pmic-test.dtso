@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: MIT
+/*
+ * Bring-up only (CAMERA-PLAN.md, stage RC1.2): enable the SLG51000 camera
+ * PMIC node on hsi2c_7. Its driver (slg51000-regulator) has no OF match
+ * table and is blacklisted anyway (omamobile-camera-bringup.conf), so it
+ * loads only by hand, after tools/camera-pmic-gpio has raised the boost
+ * and buck lines. Needs camera-gpio-test for the S2MPG11 GPIOs. Paths, not
+ * labels, so the base DTB needs no __symbols__.
+ */
+/dts-v1/;
+/plugin/;
+
+&{/soc@0/usi@109600c0/i2c@10960000/pmic@75} {
+	status = "okay";
+};

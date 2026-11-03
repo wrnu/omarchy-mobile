@@ -1,0 +1,249 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+"""camera-pmic-gpio: raise and lower the raven camera PMIC's power lines.
+
+Runs on the phone (device/raven/CAMERA-PLAN.md, stages RC1.2-RC1.3), no
+dependencies beyond Python. The SLG51000 camera PMIC needs its boost (bb,
+S2MPG11 GPIO 1) and buck (GPIO 3) lines high before its chip select (GPIO
+0), and mainline's binding describes only chip select, which the
+slg51000-regulator driver raises itself. This tool drives the other two
+through the gpio-s2mpg11 driver's character device (the kernel does the
+PMIC writes over ACPM; nothing here touches a register).
+
+    tools/phone-ssh 'cat > /run/camera-pmic-gpio' < tools/camera-pmic-gpio
+    python3 /run/camera-pmic-gpio hold --max 60 &   # bb, 2 ms, buck, 2 ms
+    modprobe slg51000-regulator                     # cs high, 10 ms, reads
+    rmmod slg51000_regulator
+    python3 /run/camera-pmic-gpio cs-low
+    kill %1                                         # buck, 2 ms, bb: off
+
+hold keeps the lines until SIGTERM or SIGINT, or until --max seconds have
+passed (a dead-man switch; at most 120), then lowers chip select if no
+driver holds it, then buck, then bb.
+
+hold --pu also takes pu (GPIO 4), driven low, and raises it on SIGUSR1:
+Google's driver raises pu last, 1 ms after chip select and the PMIC's
+setup, and keeps it high while the PMIC is on. Powering down then lowers
+pu first, 1 ms, then chip select, 10 ms, buck, 1 ms, bb (Google's order).
+pu alone (CAMERA-PLAN RC4.2a), for kernels whose regulators own bb, buck
+and chip select: take GPIO 4 low, raise it on SIGUSR1 (only while the
+PMIC is on: hold one of its LDOs first) and lower it on SIGTERM, SIGINT
+or after --max seconds.
+
+    python3 /run/camera-pmic-gpio pu --max 30 &
+    kill -USR1 %1                                   # pu high, 1 ms
+    kill %1                                         # pu low, 1 ms
+
+GPIO 2 (the telephoto supply) is never requested.
+"""
+import argparse
+import ctypes
+import fcntl
+import glob
+import os
+import signal
+import sys
+import time
+
+LABEL = "s2mpg11-gpio"
+CS, BB, BUCK, PU = 0, 1, 3, 4
+PIDFILE = "/run/camera-pmic-gpio.pid"
+MAX_HOLD = 120
+
+GPIO_V2_LINES_MAX = 64
+GPIO_V2_LINE_NUM_ATTRS_MAX = 10
+GPIO_V2_LINE_FLAG_OUTPUT = 1 << 3
+GPIO_V2_LINE_ATTR_ID_OUTPUT_VALUES = 2
+
+
+class ChipInfo(ctypes.Structure):
+    _fields_ = [("name", ctypes.c_char * 32), ("label", ctypes.c_char * 32),
+                ("lines", ctypes.c_uint32)]
+
+
+class LineAttribute(ctypes.Structure):
+    _fields_ = [("id", ctypes.c_uint32), ("padding", ctypes.c_uint32),
+                ("values", ctypes.c_uint64)]
+
+
+class LineConfigAttribute(ctypes.Structure):
+    _fields_ = [("attr", LineAttribute), ("mask", ctypes.c_uint64)]
+
+
+class LineConfig(ctypes.Structure):
+    _fields_ = [("flags", ctypes.c_uint64), ("num_attrs", ctypes.c_uint32),
+                ("padding", ctypes.c_uint32 * 5),
+                ("attrs", LineConfigAttribute * GPIO_V2_LINE_NUM_ATTRS_MAX)]
+
+
+class LineRequest(ctypes.Structure):
+    _fields_ = [("offsets", ctypes.c_uint32 * GPIO_V2_LINES_MAX),
+                ("consumer", ctypes.c_char * 32), ("config", LineConfig),
+                ("num_lines", ctypes.c_uint32),
+                ("event_buffer_size", ctypes.c_uint32),
+                ("padding", ctypes.c_uint32 * 5), ("fd", ctypes.c_int32)]
+
+
+class LineValues(ctypes.Structure):
+    _fields_ = [("bits", ctypes.c_uint64), ("mask", ctypes.c_uint64)]
+
+
+def _iowr(nr, size, read_only=False):
+    direction = 2 if read_only else 3  # _IOC_READ, or _IOC_READ|_IOC_WRITE
+    return (direction << 30) | (size << 16) | (0xB4 << 8) | nr
+
+
+GPIO_GET_CHIPINFO_IOCTL = _iowr(0x01, ctypes.sizeof(ChipInfo), read_only=True)
+GPIO_V2_GET_LINE_IOCTL = _iowr(0x07, ctypes.sizeof(LineRequest))
+GPIO_V2_LINE_SET_VALUES_IOCTL = _iowr(0x0F, ctypes.sizeof(LineValues))
+
+assert ctypes.sizeof(LineRequest) == 592, ctypes.sizeof(LineRequest)
+
+
+def log(msg):
+    print(f"camera-pmic-gpio: {msg}", flush=True)
+    try:
+        with open("/dev/kmsg", "w") as k:
+            k.write(f"camera-pmic-gpio: {msg}\n")
+    except OSError:
+        pass
+
+
+def find_chip():
+    for path in sorted(glob.glob("/dev/gpiochip*")):
+        fd = os.open(path, os.O_RDWR)
+        info = ChipInfo()
+        fcntl.ioctl(fd, GPIO_GET_CHIPINFO_IOCTL, info)
+        if info.label.decode() == LABEL and info.lines == 6:
+            return fd, path
+        os.close(fd)
+    sys.exit(f"no {LABEL} gpiochip: is gpio_s2mpg11 bound (camera-gpio-test)?")
+
+
+def request(chip, offsets, consumer):
+    """Request the lines as outputs driven low; returns the line fd."""
+    req = LineRequest()
+    for i, off in enumerate(offsets):
+        req.offsets[i] = off
+    req.num_lines = len(offsets)
+    req.consumer = consumer.encode()
+    req.config.flags = GPIO_V2_LINE_FLAG_OUTPUT
+    req.config.num_attrs = 1
+    req.config.attrs[0].attr.id = GPIO_V2_LINE_ATTR_ID_OUTPUT_VALUES
+    req.config.attrs[0].attr.values = 0
+    req.config.attrs[0].mask = (1 << len(offsets)) - 1
+    fcntl.ioctl(chip, GPIO_V2_GET_LINE_IOCTL, req)
+    return req.fd
+
+
+def set_line(fd, index, value):
+    vals = LineValues(bits=(value & 1) << index, mask=1 << index)
+    fcntl.ioctl(fd, GPIO_V2_LINE_SET_VALUES_IOCTL, vals)
+
+
+def cs_low(chip):
+    try:
+        fd = request(chip, [CS], "camera-pmic-cs")
+    except OSError as e:
+        log(f"chip select not lowered ({e.strerror}: a driver still holds it)")
+        return False
+    os.close(fd)  # requested as an output driven low
+    log("chip select low")
+    return True
+
+
+def hold(chip, max_s, with_pu):
+    if os.path.exists(PIDFILE):
+        sys.exit(f"{PIDFILE} exists: another hold is running")
+    lines = [BB, BUCK] + ([PU] if with_pu else [])
+    fd = request(chip, lines, "camera-pmic-power")  # all low first
+    with open(PIDFILE, "w") as f:
+        f.write(f"{os.getpid()}\n")
+    stop, pu = [], []
+    signal.signal(signal.SIGTERM, lambda *_: stop.append(1))
+    signal.signal(signal.SIGINT, lambda *_: stop.append(1))
+    if with_pu:
+        signal.signal(signal.SIGUSR1, lambda *_: pu.append(1))
+    pu_high = False
+    try:
+        set_line(fd, 0, 1)
+        time.sleep(0.002)
+        set_line(fd, 1, 1)
+        time.sleep(0.002)
+        log(f"bb and buck high; holding for at most {max_s} s")
+        end = time.monotonic() + max_s
+        while not stop and time.monotonic() < end:
+            if pu and not pu_high:
+                set_line(fd, 2, 1)
+                time.sleep(0.001)
+                pu_high = True
+                log("pu high")
+            time.sleep(0.01)
+        log("timeout: powering down" if not stop else "stop: powering down")
+        if pu_high:
+            set_line(fd, 2, 0)
+            time.sleep(0.001)
+            log("pu low")
+        if cs_low(chip):
+            time.sleep(0.010)
+        set_line(fd, 1, 0)
+        time.sleep(0.001)
+        set_line(fd, 0, 0)
+        log("buck and bb low")
+    finally:
+        os.close(fd)
+        os.unlink(PIDFILE)
+
+
+def pu_only(chip, max_s):
+    fd = request(chip, [PU], "camera-pmic-pu")  # low first
+    stop, up = [], []
+    signal.signal(signal.SIGTERM, lambda *_: stop.append(1))
+    signal.signal(signal.SIGINT, lambda *_: stop.append(1))
+    signal.signal(signal.SIGUSR1, lambda *_: up.append(1))
+    high = False
+    try:
+        log(f"pu taken, low; holding for at most {max_s} s")
+        end = time.monotonic() + max_s
+        while not stop and time.monotonic() < end:
+            if up and not high:
+                set_line(fd, 0, 1)
+                time.sleep(0.001)
+                high = True
+                log("pu high")
+            time.sleep(0.01)
+        log("timeout: pu low" if not stop else "stop: pu low")
+        set_line(fd, 0, 0)
+        time.sleep(0.001)
+    finally:
+        os.close(fd)
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    sub = p.add_subparsers(dest="cmd", required=True)
+    h = sub.add_parser("hold", help="bb, then buck high until stopped")
+    h.add_argument("--max", type=int, default=60,
+                   help=f"seconds before powering down by itself (at most {MAX_HOLD})")
+    h.add_argument("--pu", action="store_true",
+                   help="also take pu (GPIO 4), low; SIGUSR1 raises it")
+    u = sub.add_parser("pu", help="pu (GPIO 4) alone: low, SIGUSR1 raises it")
+    u.add_argument("--max", type=int, default=30,
+                   help=f"seconds before lowering it by itself (at most {MAX_HOLD})")
+    sub.add_parser("cs-low", help="drive chip select low (after rmmod)")
+    args = p.parse_args()
+    chip, path = find_chip()
+    if args.cmd == "hold":
+        if not 1 <= args.max <= MAX_HOLD:
+            sys.exit(f"--max must be 1..{MAX_HOLD}")
+        hold(chip, args.max, args.pu)
+    elif args.cmd == "pu":
+        if not 1 <= args.max <= MAX_HOLD:
+            sys.exit(f"--max must be 1..{MAX_HOLD}")
+        pu_only(chip, args.max)
+    else:
+        cs_low(chip)
+
+
+if __name__ == "__main__":
+    main()

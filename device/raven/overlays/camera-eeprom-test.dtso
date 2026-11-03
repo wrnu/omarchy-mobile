@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: MIT
+/*
+ * Bring-up only (CAMERA-PLAN.md, stage RC1.3): enable the ultrawide
+ * camera's bus (USI3, hsi2c_3) and give the SLG51000's LDO1 a sysfs switch,
+ * so tools/camera-eeprom-probe can power the module EEPROM at 0x50 the way
+ * stock does (LDO1 only, 1 ms) and read it with i2c-dev. Nothing on the bus
+ * is described, so no driver talks to it. The regulator-output driver
+ * (userspace-consumer) is blacklisted and never switches the rail by itself.
+ * Apply with camera-gpio-test and camera-pmic-test.
+ */
+/dts-v1/;
+/plugin/;
+
+&usi3 {
+	status = "okay";
+};
+
+&hsi2c_3 {
+	status = "okay";
+};
+
+&{/} {
+	camera-eeprom-ldo1 {
+		compatible = "regulator-output";
+		vout-supply = <&cam_ldo1>;
+	};
+};

@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: MIT
+/*
+ * Bring-up only (CAMERA-PLAN.md, stage RC2.0): a simple-pm-bus that holds
+ * the CSIS power domain and CMU_TOP's CSIS bus clock, so that
+ * tools/camera-csis-probe can power BLK_CSIS by hand (runtime PM's
+ * power/control "on") and read one register, CSIS link 0's version. No
+ * driver touches the block's registers. genpd powers pd_csis on once at
+ * boot while it attaches the bus, and off again when the bus stays
+ * suspended. Stock gs101 claims pd_csis only from the CSIS SysMMUs; the
+ * CSIS node itself names no domain, so pd_pdp stays off.
+ *
+ * fdtoverlay runs no preprocessor: clock 95 is CLK_DOUT_CMU_CSIS_BUS
+ * (include/dt-bindings/clock/google,gs101.h); enabling it ungates its
+ * parent, gout_cmu_csis_bus.
+ */
+/dts-v1/;
+/plugin/;
+
+&{/soc@0} {
+	bus@1a440000 {
+		compatible = "simple-pm-bus";
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges = <0x0 0x1a440000 0x1000>;
+		power-domains = <&pd_csis>;
+		clocks = <&cmu_top 95>;
+	};
+};

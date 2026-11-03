@@ -126,11 +126,18 @@ need_pmic2() {
 #    ssh running and the tool never exited.
 say "streaming the phone's kernel log to $log"
 echo "# camera-stage $stamp stage=$stage reg=$reg regs=$regs watchdog=$watchdog" >> "$log"
-setsid bash -c '
+# macOS has no setsid(1): perl's POSIX::setsid does the same before the exec.
+if command -v setsid >/dev/null; then
+  new_session() { setsid "$@"; }
+else
+  new_session() { perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV or die "exec: $!"' "$@"; }
+fi
+new_session bash -c '
   "$1" -T -o ServerAliveInterval=1 -o ServerAliveCountMax=5 "exec cat /dev/kmsg" 2>&1 </dev/null |
   while IFS= read -r line; do printf "%s %s\n" "$(date +%T.%3N)" "$line"; done
   echo "# $(date +%T.%3N) log stream ended (connection closed or phone gone)"' _ "$SSH" >> "$log" 2>&1 &
 logger=$!
+disown "$logger" 2>/dev/null
 wd_armed=0
 cleanup() {
   # stop the watchdog feeder first if it is still ours to stop
@@ -150,7 +157,16 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 sleep 2
-mark "start $stage" || die "phone stopped answering before the test"
+mark "start $stage $stamp" || die "phone stopped answering before the test"
+# Nothing touches the hardware until the stream is known to be live: this
+# run's start marker (the stamp makes it unique within the boot) must have
+# reached the laptop's log, after the replay of the boot's whole log.
+for _ in $(seq 300); do
+  grep -c "camera-stage: start $stage $stamp" "$log" >/dev/null && break
+  sleep 0.1
+done
+grep -c "camera-stage: start $stage $stamp" "$log" >/dev/null ||
+  die "the kernel log stream is not running (see $log); nothing was touched"
 
 # 2. Optional watchdog: a feeder loop that stops when the phone hangs.
 if ((watchdog)); then

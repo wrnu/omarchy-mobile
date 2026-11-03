@@ -39,6 +39,10 @@
 #   SENSOR_OPTS= sensor module parameters for one run (it is reloaded)
 #   PRE_STREAM=  a command run just before streaming ($SENSOR_DEV: the
 #                sensor's I2C device, e.g. 0-003d)
+#   CAM=args     hand the camera to libcamera instead: runs cam ARGS once
+#                the media graph is up (e.g. CAM="-c1 --capture=10
+#                --file=/tmp/uw-#.ppm"); sensor formats and controls are
+#                libcamera's, PATTERN and CTRLS are ignored
 #   CSIS_OPTS=   extra gs201_csis parameters for one experiment, e.g.
 #                "cam_khz=0" (no CAM DVFS vote: CAM3b.5a), "int_khz=0" or
 #                "sysreg_link_sel=1" (one per boot)
@@ -56,9 +60,88 @@ s5kgm5) CODE=SBGGR10_1X10 FOURCC=pBAA MOD=s5kgn1 LENSMOD=sem1215 LENS=${LENS:-1}
 esac
 say() { echo "cap-test: $*"; echo "cap-test: $*" > /dev/kmsg; }
 
+# raven (device/raven/CAMERA-PLAN.md, RC2.1-RC2.2): the SLG51000 camera PMIC
+# needs its bb, buck and pu lines from /run/camera-pmic-gpio (as in
+# tools/camera-uw-probe), held for at most 120 s (a dead-man switch), and
+# everything is unloaded and powered down again at exit. From RC2.4 the DT
+# gives bb and buck to the kernel (the PMIC's vdd supply), and its driver
+# powers the chip while an LDO is on: no holder then.
+RAVEN=0 PMIC_VDD=0
+tr -d '\0' < /sys/firmware/devicetree/base/compatible | grep -c 'google,gs101-raven' >/dev/null && RAVEN=1
+[ -e /sys/firmware/devicetree/base/soc@0/usi@109600c0/i2c@10960000/pmic@75/vdd-supply ] && PMIC_VDD=1
+raven_off() {
+	for m in gs201_csis imx386 slg51000_regulator; do
+		grep -c "^$m " /proc/modules >/dev/null || continue
+		rmmod $m || { say "rmmod $m failed: the PMIC stays up until a reboot"; fuser -v /dev/video* /dev/media* /dev/v4l-subdev* 2>&1; }
+	done
+	# the holder lowers pu, then chip select (10 ms), buck, bb
+	[ -n "${holder:-}" ] && kill "$holder" 2>/dev/null && wait "$holder"
+	say "raven: camera PMIC powered down"
+}
+# From RC2.5 omamobile-camera-start loads the stack at boot. Then (RC4.3)
+# only the sensor is loaded here, gs201_csis gets this run's parameters
+# through sysfs, and they go back at exit; the rest stays as the boot left it.
+BOOTED=0
+P=/sys/module/gs201_csis/parameters
+booted_off() {
+	echo "$old_allow" > $P/allow_stream
+	echo "$old_link_only" > $P/link_only
+	say "raven: gs201_csis parameters back as the boot left them"
+}
+if [ "$RAVEN" = 1 ] && [ "$PMIC_VDD" = 1 ] && grep -c '^gs201_csis ' /proc/modules >/dev/null; then
+	BOOTED=1
+	[ -n "$CSIS_OPTS$SENSOR_OPTS" ] || [ "$CH" != "$(cat $P/wdma_channel)" ] &&
+		{ echo "CSIS_OPTS, SENSOR_OPTS and another CH need a stack loaded here: reboot with the camera timer masked"; exit 1; }
+	old_allow=$(cat $P/allow_stream) old_link_only=$(cat $P/link_only)
+	trap booted_off EXIT
+	say "raven: the camera stack is loaded from the boot; loading $MOD only"
+elif [ "$RAVEN" = 1 ] && [ "$PMIC_VDD" = 1 ]; then
+	for m in slg51000_regulator imx386 gs201_csis; do
+		grep -c "^$m " /proc/modules >/dev/null && { echo "$m already loaded: reboot first"; exit 1; }
+	done
+	trap raven_off EXIT
+	modprobe slg51000-regulator || { say "modprobe slg51000-regulator failed"; exit 1; }
+	sleep 1
+	ls -d /sys/bus/i2c/drivers/slg51000-regulator/*-0075 >/dev/null 2>&1 || { say "slg51000 not bound"; exit 1; }
+	say "raven: camera PMIC bound, powered by its driver ($(cat /sys/bus/i2c/devices/*-0075/power/runtime_status))"
+elif [ "$RAVEN" = 1 ]; then
+	[ -r /run/camera-pmic-gpio ] || { echo "copy tools/camera-pmic-gpio to /run/camera-pmic-gpio first"; exit 1; }
+	for m in slg51000_regulator imx386 gs201_csis; do
+		grep -c "^$m " /proc/modules >/dev/null && { echo "$m already loaded: reboot first"; exit 1; }
+	done
+	say "raven: bb, buck high, pu low (held at most 120 s)"
+	python3 /run/camera-pmic-gpio hold --pu --max 120 &
+	holder=$!
+	trap raven_off EXIT
+	sleep 1
+	kill -0 "$holder" 2>/dev/null || { say "hold exited early"; holder=; exit 1; }
+	modprobe slg51000-regulator || { say "modprobe slg51000-regulator failed"; exit 1; }
+	sleep 1
+	ls -d /sys/bus/i2c/drivers/slg51000-regulator/*-0075 >/dev/null 2>&1 || { say "slg51000 not bound"; exit 1; }
+	# PU=0: leave pu (S2MPG11 GPIO 4) low, to learn whether anything needs it
+	if [ "${PU:-1}" = 1 ]; then
+		kill -USR1 "$holder"; sleep 0.2
+		say "raven: camera PMIC up, pu high"
+	else
+		say "raven: camera PMIC up, pu left low (PU=0)"
+	fi
+fi
+
 # Modules, in order; gs201_csis gets the step's parameters on every run.
+if [ "$BOOTED" = 1 ]; then
+	[ "$LENS" = 1 ] && { modprobe "$LENSMOD" || { say "modprobe $LENSMOD failed"; exit 1; }; }
+	modprobe "$MOD" || { say "modprobe $MOD failed"; exit 1; }
+	echo Y > $P/allow_stream
+	if [ "$DMA" = 1 ]; then
+		echo N > $P/link_only
+	else
+		echo Y > $P/link_only
+	fi
+	sleep 2
+else
 modprobe sec_acpm 2>/dev/null
 MODS="gpio_s2mpg13 slg51002_regulator $MOD phy_gs201_mipi_dcphy_rx"
+[ "$RAVEN" = 1 ] && MODS="$MOD phy_gs201_mipi_dcphy_rx"
 [ "$LENS" = 1 ] && MODS="$MODS $LENSMOD"
 for m in $MODS; do
 	modprobe "$m" || { say "modprobe $m failed"; exit 1; }
@@ -76,6 +159,7 @@ else
 	modprobe gs201_csis allow_stream=1 link_only=1 $CSIS_OPTS
 fi
 sleep 2
+fi
 
 MD=
 for d in /dev/media*; do
@@ -93,6 +177,17 @@ NLINKS=$(media-ctl -d "$MD" -p | grep -c -- "-> \"$CSIS\":0")
 say "media $MD: '$SENSOR_ENT' -> '$CSIS' -> $VIDEO; sensor->CSIS links: $NLINKS"
 [ "$NLINKS" = 1 ] || { say "expected exactly one sensor->CSIS link"; exit 1; }
 
+if [ -n "${CAM:-}" ]; then
+	say "libcamera: cam -l; cam $CAM"
+	cam -l
+	# shellcheck disable=SC2086 # CAM is a list of arguments
+	timeout 60 cam $CAM
+	say "cam rc=$?"
+	DBG=$(ls -d /sys/kernel/debug/$(printf "%x" $((0x1a44 + LINK)))0000.csis 2>/dev/null | head -1)
+	[ -n "$DBG" ] && cat "$DBG/stats"
+	exit 0
+fi
+
 media-ctl -d "$MD" -V "\"$SENSOR_ENT\":0 [fmt:$CODE/${W}x${H}]" || exit 1
 media-ctl -d "$MD" -V "\"$CSIS\":0 [fmt:$CODE/${W}x${H}]" || exit 1
 media-ctl -d "$MD" --get-v4l2 "\"$SENSOR_ENT\":0"
@@ -109,7 +204,7 @@ v4l2-ctl -d "$SUBDEV" -l | grep -E "exposure|gain|vblank|test_pattern|pixel_valu
 v4l2-ctl -d "$VIDEO" --set-fmt-video=width="$W",height="$H",pixelformat=$FOURCC || exit 1
 v4l2-ctl -d "$VIDEO" --get-fmt-video | grep -E "Width|Pixel Format|Bytes per Line|Size Image"
 
-DBG=$(ls -d /sys/kernel/debug/1a4$((4 + LINK))0000.csis 2>/dev/null | head -1)
+DBG=$(ls -d /sys/kernel/debug/$(printf "%x" $((0x1a44 + LINK)))0000.csis 2>/dev/null | head -1)
 # PRE_STREAM=cmd: a bring-up command run just before streaming (e.g. power
 # the sensor up first through its runtime PM control); $SENSOR_DEV is its
 # I2C device name
@@ -126,11 +221,26 @@ if [ "$DMA" = 1 ]; then
 else
 	say "streaming ${SECS}s, link only (no DMA)"
 	timeout "$SECS" v4l2-ctl -d "$VIDEO" --stream-mmap --stream-count=1000 >/dev/null &
+	streamer=$!
 	sleep 2
 	say "mid-stream state"
 	[ -n "$DBG" ] && cat "$DBG/stats" "$DBG/scan"
 	cat /sys/kernel/debug/*.phy/regs 2>/dev/null
-	wait
+	# MID=cmd: a bring-up command run mid-stream ($SENSOR_DEV, $SENSOR_BUS:
+	# the sensor's I2C device and bus number), followed by the same dump
+	# (e.g. stop the sensor's output and see which PHY or link register
+	# follows it)
+	if [ -n "${MID:-}" ]; then
+		SENSOR_BUS=${SENSOR_DEV%%-*}
+		say "mid-stream: $MID"
+		eval "$MID"
+		sleep 0.5
+		say "after mid-stream command"
+		[ -n "$DBG" ] && cat "$DBG/stats" "$DBG/scan"
+		cat /sys/kernel/debug/*.phy/regs 2>/dev/null
+	fi
+	# only the streamer: on raven the PMIC holder is a background job too
+	wait "$streamer"
 fi
 echo "rc=$?"
 [ -n "$DBG" ] && cat "$DBG/stats"

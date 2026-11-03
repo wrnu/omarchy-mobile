@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: MIT
+/*
+ * Bring-up only (CAMERA-PLAN.md, RC2.0h-l, RC2.0u-x): leave the CSIS power
+ * domain as the bootloader hands it over (on, RC2.0s), so that
+ * tools/camera-csis-abl-probe can read CMU_CSIS as the bootloader
+ * configured it: the state Google's CAL saves before its first power-off
+ * and restores after every power-on.
+ *
+ * - google,keep-boot-on: the PD driver's bring-up sync_state leaves
+ *   pd_csis on. pd_ignore_unused can't do this: genpd's sync_state powers
+ *   boot-on domains off regardless (RC2.0u).
+ * - A simple-pm-bus with CMU_TOP's CSIS bus clock only, no power domain,
+ *   so runtime PM's power/control can ungate gout_cmu_csis_bus without
+ *   genpd touching pd_csis. Clock 95 is CLK_DOUT_CMU_CSIS_BUS
+ *   (include/dt-bindings/clock/google,gs101.h).
+ */
+/dts-v1/;
+/plugin/;
+
+&pd_csis {
+	google,keep-boot-on;
+};
+
+&{/soc@0} {
+	bus@1a440000 {
+		compatible = "simple-pm-bus";
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges = <0x0 0x1a440000 0x1000>;
+		clocks = <&cmu_top 95>;
+	};
+};
