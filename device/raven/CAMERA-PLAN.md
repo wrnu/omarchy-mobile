@@ -2276,3 +2276,31 @@ the AF driver (ak7377), then libcamera and a tuning file.
 - Next (offline): keep these domains from being cycled by system resume, or
   restore CMU_CSIS on that power-on so the power-off completes; then the same
   suspend-then-capture test. Until then, no capture after a suspend.
+
+### RC4.9 runbook (offline, 2026-11-03): a capture after suspend, with the power-off undone on a timeout
+
+Kernel `563348b18` "pmdomain: samsung: exynos-pm-domains: undo a power-off
+that timed out" (branch `omamobile-gs101-camera-v2`). RC4.8's cycle stays:
+genpd powers pd_csis, pd_pdp and pd_itp on at resume and off at complete,
+and that power-off still times out (CMU_CSIS isn't restored on a bare
+power-on; `pm_runtime_force_resume()` leaves a runtime-suspended CMU alone).
+What changes is the timeout's aftermath: the driver writes the domain's
+configuration back to on, waits for it, and restores the DTZPC, so the
+domain stays on **and reachable**, as genpd already believes. The next
+camera stream finds it on, CMU_CSIS's runtime resume restores the CMU, and
+the stream's end powers the domain off normally. checkpatch `--strict`
+clean, `W=1` clean.
+
+Not chosen: stopping genpd's resume cycle for these domains (a genpd core
+change, and the timeout would stay a hang on any other path), or restoring
+CMU_CSIS on genpd's power-on (the CMU's PM is a consumer's, not the
+domain's).
+
+| Step | Command | Expect / Pass | Stop | Rollback | Risk |
+| --- | --- | --- | --- | --- | --- |
+| RC4.9a | push the images (`bin/omamobile push`; ask, reboot) | the new release in `uname -r`; display, touch, Wi-Fi, the cameras' start as RC4.8 | no SSH after 3 min | buttons to fastboot, flash RC4.8's set | low |
+| RC4.9b | read-only: `journalctl -b 0 \| grep -c "PM: suspend entry"`; `cat /sys/kernel/debug/pm_genpd/pm_genpd_summary \| grep -E "csis\|pdp\|itp"` | 0 suspends; the three domains `off` | | | none |
+| RC4.9c | a capture before any suspend: `tools/camera-stage --watchdog x --cmd 'cam -c1 -C2 role=raw'` | 2 frames, the three domains `off` after | a hang (this kernel broke the plain path: rollback) | | low |
+| RC4.9d | one RTC-woken s2idle: `tools/phone-ssh 'rtcwake -m no -s 30 && systemctl suspend'`, then `dmesg \| grep -E "exynos-pd\|Power domain"` and the genpd summary | woke in about 30 s; "csis disable failed: -110" (and pdp/itp) as before, **no** "did not stay on" or "restore failed"; the three domains `on` | "did not stay on" or "restore failed": do not capture, reboot (send the lines) | | low |
+| RC4.9e | the capture that hung in RC4.7 and RC4.8: `tools/camera-stage --watchdog x --cmd 'cam -c1 -C2 role=raw'` | 2 frames; afterwards the three domains `off` with no new "disable failed" | a hang: the watchdog resets in about 30-60 s (send kmsg from `logs/`) | push RC4.8's set; no capture after a suspend, as before | medium (a hang, watchdog-recovered) |
+| RC4.9f | a second suspend, then capture again (RC4.9d, RC4.9e) | as RC4.9d/e | as above | as above | medium |
