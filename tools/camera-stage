@@ -134,8 +134,9 @@ else
 fi
 new_session bash -c '
   "$1" -T -o ServerAliveInterval=1 -o ServerAliveCountMax=5 "exec cat /dev/kmsg" 2>&1 </dev/null |
-  while IFS= read -r line; do printf "%s %s\n" "$(date +%T.%3N)" "$line"; done
-  echo "# $(date +%T.%3N) log stream ended (connection closed or phone gone)"' _ "$SSH" >> "$log" 2>&1 &
+  perl -MPOSIX=strftime -MTime::HiRes=time -ne "\$| = 1; \$t = time;
+    printf \"%s.%03d %s\", strftime(\"%T\", localtime \$t), (\$t - int \$t) * 1000, \$_"
+  echo "# $(date +%T) log stream ended (connection closed or phone gone)"' _ "$SSH" >> "$log" 2>&1 &
 logger=$!
 disown "$logger" 2>/dev/null
 wd_armed=0

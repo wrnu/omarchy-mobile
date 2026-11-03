@@ -2300,7 +2300,48 @@ domain's).
 | --- | --- | --- | --- | --- | --- |
 | RC4.9a | push the images (`bin/omamobile push`; ask, reboot) | the new release in `uname -r`; display, touch, Wi-Fi, the cameras' start as RC4.8 | no SSH after 3 min | buttons to fastboot, flash RC4.8's set | low |
 | RC4.9b | read-only: `journalctl -b 0 \| grep -c "PM: suspend entry"`; `cat /sys/kernel/debug/pm_genpd/pm_genpd_summary \| grep -E "csis\|pdp\|itp"` | 0 suspends; the three domains `off` | | | none |
-| RC4.9c | a capture before any suspend: `tools/camera-stage --watchdog x --cmd 'cam -c1 -C2 role=raw'` | 2 frames, the three domains `off` after | a hang (this kernel broke the plain path: rollback) | | low |
+| RC4.9c | a capture before any suspend: `tools/camera-stage --watchdog x --cmd 'systemd-inhibit --what=sleep:idle cam -c1 -C2 -s role=raw'` | 2 frames, the three domains `off` after | a hang (this kernel broke the plain path: rollback) | | low |
 | RC4.9d | one RTC-woken s2idle: `tools/phone-ssh 'rtcwake -m no -s 30 && systemctl suspend'`, then `dmesg \| grep -E "exynos-pd\|Power domain"` and the genpd summary | woke in about 30 s; "csis disable failed: -110" (and pdp/itp) as before, **no** "did not stay on" or "restore failed"; the three domains `on` | "did not stay on" or "restore failed": do not capture, reboot (send the lines) | | low |
-| RC4.9e | the capture that hung in RC4.7 and RC4.8: `tools/camera-stage --watchdog x --cmd 'cam -c1 -C2 role=raw'` | 2 frames; afterwards the three domains `off` with no new "disable failed" | a hang: the watchdog resets in about 30-60 s (send kmsg from `logs/`) | push RC4.8's set; no capture after a suspend, as before | medium (a hang, watchdog-recovered) |
+| RC4.9e | the capture that hung in RC4.7 and RC4.8: `tools/camera-stage --watchdog x --cmd 'systemd-inhibit --what=sleep:idle cam -c1 -C2 -s role=raw'` | 2 frames; afterwards the three domains `off` with no new "disable failed" | a hang: the watchdog resets in about 30-60 s (send kmsg from `logs/`) | push RC4.8's set; no capture after a suspend, as before | medium (a hang, watchdog-recovered) |
 | RC4.9f | a second suspend, then capture again (RC4.9d, RC4.9e) | as RC4.9d/e | as above | as above | medium |
+
+### RC4.9 on the phone (2026-11-03, `7.3.0-rc6-omamobile-push1-g563348b18985`): stopped at RC4.9e, the undo doesn't help
+
+- RC4.9a-c pass: taint 0, no failed units, no suspend; the three domains
+  `off-0`; a capture before any suspend gives FS 2, FE 2 (link and WDMA),
+  and the domains are `off-0` after it.
+- RC4.9d as predicted: an RTC-woken s2idle (woke at 13 s, early as in S4);
+  "itp/csis/pdp disable failed: -110 (status 0x1)"; no "did not stay on" or
+  "restore failed", so the undo ran clean; the three domains `on`.
+- **RC4.9e hung** at the stream start (the last line is libcamera's
+  "configuring streams"); the watchdog reset the phone in about a minute.
+  Writing the domain back to on after a stuck power-off, and restoring the
+  DTZPC, doesn't make the block reachable: a power-off stuck partway leaves
+  more than the TZPC behind. Reverted (`8de93fd39`).
+- **Why pd_pdp and pd_itp cycle too:** they hold no devices, but the
+  platform devices of their subdomains (pd_ipp's `17462600`, pd_dns's
+  `17462500`) sit in them as consumers, runtime-suspended, and genpd's resume
+  powers their parents on for them.
+- Two tool fixes found on the way: `tools/camera-stage` timestamped every
+  kmsg line with a `date` fork (`%3N` isn't macOS's), so replaying a
+  3,500-line boot log overran its 30 s start check; it now timestamps in one
+  perl process. The capture command needs `-s` before `role=raw`.
+
+### RC4.10 runbook (offline, 2026-11-03): genpd leaves idle domains off at resume
+
+Kernel `cc0d345e3` "pmdomain: core: let a domain stay off at system resume
+for idle devices": a genpd flag, `GENPD_FLAG_RPM_RESUME`, set only by the
+gs101 domains. With it, genpd powers a domain on at resume only for a device
+that wasn't runtime-suspended or that `pm_runtime_force_resume()` will
+resume; the domain otherwise stays off until runtime PM needs it, so the
+power-off that can't complete never happens. Every device in pd_csis uses
+runtime PM or `pm_runtime_force_*` (CMU_CSIS, simple-pm-bus, CSIS, the
+DPHY), and the subdomains' devices have no system sleep callbacks. Other
+SoCs don't set the flag. checkpatch `--strict`: two CHECKs on lines that
+follow their neighbours' form (`genpd_is_*` macros, `(1U << n)` flags).
+
+Steps as RC4.9 (a-f), with these expectations instead:
+- RC4.9d: **no** "disable failed" for itp, csis or pdp, and the three
+  domains still `off-0` after the suspend.
+- RC4.9e: the capture passes; the domains `off-0` after it.
+- Stop as RC4.9; rollback: push RC4.8's set (`g1adc782c97c8`).
